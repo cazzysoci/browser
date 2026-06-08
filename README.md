@@ -45,6 +45,14 @@ node -e "console.log('✅ Puppeteer installed successfully!')"
 
 
 
+
+
+
+# Install older stable versions without deprecation warnings
+npm install puppeteer@19.11.1 puppeteer-extra@3.3.4 puppeteer-extra-plugin-stealth@2.11.1
+
+
+
 rm -rf node_modules package-lock.json ~/.cache/puppeteer
 apt-get update && apt-get install -y chromium
 PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
