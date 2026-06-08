@@ -15,4 +15,9 @@ echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /e
 apt-get update && apt-get install -y google-chrome-stable
 
 # Then use the system Chrome
-PUPPETEER_EXECUTABLE_PATH=$(which google-chrome-stable) node browser.js <args>```
+PUPPETEER_EXECUTABLE_PATH=$(which google-chrome-stable) node browser.js <args>
+
+
+apt-get update && apt-get install -y chromium && PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer-core@22.15.0 puppeteer-extra puppeteer-extra-plugin-stealth async && node browser.js https://example.com 5 proxies.txt 100 60
+
+```
