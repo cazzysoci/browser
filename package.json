@@ -1,18 +1,24 @@
 {
   "name": "browser-attack",
   "version": "1.0.0",
-  "description": "Browser automation tool",
+  "description": "Browser automation tool for educational purposes",
   "main": "browser.js",
   "scripts": {
-    "start": "node browser.js"
+    "start": "node browser.js",
+    "flood": "node flood.js"
   },
   "dependencies": {
     "async": "^3.2.5",
-    "hpack": "^0.1.0",
-    "http2": "^3.3.7",
-    "puppeteer": "^21.0.0",
+    "puppeteer": "^21.11.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "request": "^2.88.2"
-  }
+  },
+  "keywords": [
+    "browser",
+    "automation",
+    "puppeteer"
+  ],
+  "author": "Cazzy",
+  "license": "MIT"
 }
