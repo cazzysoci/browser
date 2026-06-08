@@ -1,0 +1,18 @@
+{
+  "name": "browser-attack",
+  "version": "1.0.0",
+  "description": "Browser automation tool",
+  "main": "browser.js",
+  "scripts": {
+    "start": "node browser.js"
+  },
+  "dependencies": {
+    "async": "^3.2.5",
+    "hpack": "^0.1.0",
+    "http2": "^3.3.7",
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "request": "^2.88.2"
+  }
+}
