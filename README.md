@@ -20,8 +20,6 @@ apt-get update && apt-get install -y chromium
 
 
 
-
-
 # Install Chrome on your system
 wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
 echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
@@ -34,5 +32,15 @@ which google-chrome-stable
 
 # Install puppeteer without downloading Chrome
 PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer
+
+
+
+
+
+# One-liner to fix everything
+rm -rf ~/.cache/puppeteer node_modules package-lock.json && \
+apt-get update && apt-get install -y chromium && \
+PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer && \
+node -e "console.log('✅ Puppeteer installed successfully!')"
 
 ```
