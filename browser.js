@@ -1,8 +1,12 @@
 const fs = require("fs");
+const puppeteerCore = require("puppeteer");
 const puppeteer = require("puppeteer-extra");
 const puppeteerStealth = require("puppeteer-extra-plugin-stealth");
 const async = require("async");
 const { exec, spawn } = require("child_process");
+
+// Set the executable path to puppeteer's bundled Chromium
+puppeteer.executablePath = puppeteerCore.executablePath();
 
 const COOKIES_MAX_RETRIES = 1;
 
@@ -278,7 +282,7 @@ async function startThread(targetURL, browserProxy, task, done, retries = 0) {
       rates,
       response.cookies,
       response.userAgent,
-    ]);
+    ], { detached: true, stdio: 'ignore' });
     if (browser) await browser.close();
     done(null, { task, currentTask: queue.length() });
   } catch (error) {
