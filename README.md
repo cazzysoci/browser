@@ -57,4 +57,9 @@ PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer puppeteer-extra puppeteer-ext
 # Install older stable versions without deprecation warnings
 npm install puppeteer@19.11.1 puppeteer-extra@3.3.4 puppeteer-extra-plugin-stealth@2.11.1
 
+
+
+
+rm -rf node_modules package-lock.json && PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth && node -e "const p = require('puppeteer-extra'); p.use(require('puppeteer-extra-plugin-stealth')()); (async()=>{const b=await p.launch({executablePath:'/usr/bin/chromium',args:['--no-sandbox']});const pg=await b.newPage();await pg.goto('https://example.com');console.log('✅ Works! Title:',await pg.title());await b.close();})();"
+
 ```
