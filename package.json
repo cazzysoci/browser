@@ -1,24 +1,18 @@
+cat > package.json << 'EOF'
 {
   "name": "browser-attack",
   "version": "1.0.0",
-  "description": "Browser automation tool for educational purposes",
+  "description": "Browser automation tool",
   "main": "browser.js",
-  "scripts": {
-    "start": "node browser.js",
-    "flood": "node flood.js"
-  },
   "type": "commonjs",
+  "scripts": {
+    "start": "node browser.js"
+  },
   "dependencies": {
     "async": "^3.2.6",
-    "puppeteer": "^24.15.0",
+    "puppeteer-core": "22.15.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
-  },
-  "keywords": [
-    "browser",
-    "automation",
-    "puppeteer"
-  ],
-  "author": "Cazzy",
-  "license": "MIT"
+  }
 }
+EOF
