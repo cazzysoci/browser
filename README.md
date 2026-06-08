@@ -43,4 +43,10 @@ apt-get update && apt-get install -y chromium && \
 PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer && \
 node -e "console.log('✅ Puppeteer installed successfully!')"
 
+
+
+rm -rf node_modules package-lock.json ~/.cache/puppeteer
+apt-get update && apt-get install -y chromium
+PUPPETEER_SKIP_DOWNLOAD=true npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
+
 ```
