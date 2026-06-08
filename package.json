@@ -7,12 +7,12 @@
     "start": "node browser.js",
     "flood": "node flood.js"
   },
+  "type": "commonjs",
   "dependencies": {
-    "async": "^3.2.5",
-    "puppeteer": "^21.11.0",
+    "async": "^3.2.6",
+    "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "request": "^2.88.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "keywords": [
     "browser",
