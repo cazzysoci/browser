@@ -206,18 +206,19 @@ async function openBrowser(targetURL, browserProxy) {
   const options = {
     headless: "new",
     ignoreHTTPSErrors: true,
+    executablePath: '/usr/bin/chromium',  
     args: [
-      `--proxy-server=http://${browserProxy}`,
-      "--no-sandbox",
-      "--no-first-run",
-      "--ignore-certificate-errors",
-      "--disable-extensions",
-      "--test-type",
-      `--user-agent=${userAgent}`,
-      "--disable-gpu",
-      "--disable-browser-side-navigation",
+        `--proxy-server=http://${browserProxy}`,
+        "--no-sandbox",
+        "--no-first-run",
+        "--ignore-certificate-errors",
+        "--disable-extensions",
+        "--test-type",
+        `--user-agent=${userAgent}`,
+        "--disable-gpu",
+        "--disable-browser-side-navigation",
     ],
-  };
+};
   let browser;
   try {
     browser = await puppeteer.launch(options);
