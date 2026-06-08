@@ -7,7 +7,6 @@ const net = require('net')
 const request = require('request')
 const cluster = require('cluster')
 const crypto = require('crypto');
-const HPACK = require('hpack');
 const currentTime = new Date();
 const os = require("os");
 const httpTime = currentTime.toUTCString();
