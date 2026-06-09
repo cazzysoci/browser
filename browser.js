@@ -20,14 +20,6 @@ try {
   process.exit(1);
 }
 
-// Verify we have puppeteer (not puppeteer-core)
-const puppeteerPackage = require("./node_modules/puppeteer/package.json");
-if (puppeteerPackage.name === "puppeteer-core") {
-  console.error("✗ ERROR: You have puppeteer-core installed instead of puppeteer!");
-  console.error("  Run: npm uninstall puppeteer-core && npm install puppeteer");
-  process.exit(1);
-}
-
 const COOKIES_MAX_RETRIES = 1;
 
 // Colors & unified logging with [m85|Browser] prefix
