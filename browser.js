@@ -1,11 +1,32 @@
 const fs = require("fs");
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const async = require("async");
 const { exec, spawn } = require("child_process");
 
-// Add the stealth plugin properly
-puppeteer.use(StealthPlugin());
+// Check if we have the right packages
+let puppeteer;
+let StealthPlugin;
+
+try {
+  // Try to require puppeteer-extra first
+  puppeteer = require("puppeteer-extra");
+  StealthPlugin = require("puppeteer-extra-plugin-stealth");
+  
+  // Add stealth plugin
+  puppeteer.use(StealthPlugin());
+  
+  console.log("✓ Using puppeteer-extra with stealth plugin");
+} catch (err) {
+  console.error("✗ Failed to load puppeteer-extra:", err.message);
+  process.exit(1);
+}
+
+// Verify we have puppeteer (not puppeteer-core)
+const puppeteerPackage = require("./node_modules/puppeteer/package.json");
+if (puppeteerPackage.name === "puppeteer-core") {
+  console.error("✗ ERROR: You have puppeteer-core installed instead of puppeteer!");
+  console.error("  Run: npm uninstall puppeteer-core && npm install puppeteer");
+  process.exit(1);
+}
 
 const COOKIES_MAX_RETRIES = 1;
 
