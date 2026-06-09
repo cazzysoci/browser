@@ -1,5 +1,5 @@
 const fs = require("fs");
-const puppeteer = require("puppeteer-extra");
+const puppeteer = require("puppeteer-core"); // Note: this is puppeteer-core
 const puppeteerStealth = require("puppeteer-extra-plugin-stealth");
 const async = require("async");
 const { exec, spawn } = require("child_process");
@@ -10,12 +10,12 @@ const COOKIES_MAX_RETRIES = 1;
 const c = {
   reset: "\x1b[0m",
   bright: "\x1b[1m",
-  red: "\x1b[31m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   pink: "\x1b[35m",
   cyan: "\x1b[36m",
   white: "\x1b[37m",
+  red: "\x1b[31m",
 };
 
 const PREFIX = `${c.bright}${c.cyan}[m85|Browser]${c.reset} `;
@@ -52,6 +52,40 @@ Array.prototype.remove = function (item) {
   }
   return item;
 };
+
+// Function to find Chrome/Chromium executable
+function findChromeExecutable() {
+  const possiblePaths = [
+    // Linux
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+    // macOS
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    // Windows
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ];
+  
+  for (const path of possiblePaths) {
+    try {
+      if (fs.existsSync(path)) {
+        return path;
+      }
+    } catch(e) {}
+  }
+  
+  // If on Linux, try to find via which command
+  try {
+    const which = require('child_process').execSync('which google-chrome || which chromium || which chromium-browser', { encoding: 'utf8' }).trim();
+    if (which) return which;
+  } catch(e) {}
+  
+  return null;
+}
 
 async function spoofFingerprint(page) {
   await page.evaluateOnNewDocument(() => {
@@ -194,7 +228,19 @@ async function detectChallenge(browser, page, browserProxy) {
 async function openBrowser(targetURL, browserProxy) {
   const userAgent = userAgents();
   
+  // Find Chrome executable
+  const chromePath = findChromeExecutable();
+  if (!chromePath) {
+    log("error", "Could not find Chrome/Chromium executable. Please install Google Chrome or Chromium.");
+    log("error", "On Ubuntu/Debian: sudo apt install google-chrome-stable");
+    log("error", "Or install puppeteer instead of puppeteer-core: npm install puppeteer");
+    return null;
+  }
+  
+  log("info", `Using Chrome at: ${chromePath}`);
+  
   const options = {
+    executablePath: chromePath,  // Required for puppeteer-core
     headless: "new",
     ignoreHTTPSErrors: true,
     args: [
@@ -302,6 +348,12 @@ async function main() {
   log("info", `Target URL: ${targetURL}`);
   log("info", `Duration: ${duration} seconds`);
   log("info", `Loaded ${proxies.length} proxies`);
+  
+  const chromePath = findChromeExecutable();
+  if (!chromePath) {
+    log("error", "No Chrome/Chromium found! Please install it or run: npm install puppeteer");
+    process.exit(1);
+  }
   
   for (const browserProxy of proxies) {
     queue.push({ browserProxy });
